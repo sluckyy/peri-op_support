@@ -1,0 +1,41 @@
+ID,Capability/requirement,Category,Target phase
+AR-001,Pre-interview synthesis and information-gap map,Core architecture,MVP foundation
+AR-002,FHIR-native mapping layer with AU Core/AUCDI/AU Base alignment,Interoperability,MVP foundation
+AR-003,FHIR Questionnaire/QuestionnaireResponse and SDC-compatible interview definition,Interoperability,Pilot
+AR-004,Terminology service: SNOMED CT-AU and AMT,Interoperability,MVP foundation
+AR-005,Longitudinal perioperative state,Workflow,Pilot
+AR-006,Clinical data-quality/conflict engine,Safety,MVP
+AR-007,Automated prior-record retrieval tasks,Workflow,Pilot
+AR-008,Preassessment triage/routing,Workflow,Pilot
+AR-009,Dynamic investigation and optimisation tasks,Workflow,Pilot
+AR-010,Prehabilitation pathways,Clinical optimisation,Later/pilot
+AR-011,Patient preparation assistant using governed rules,Patient support,Pilot
+AR-012,Plain-language reason-for-question explanations,Interview UX,MVP
+AR-013,"Multilingual, accessibility and health-literacy modes",Equity/UX,Pilot
+AR-014,Proxy histories with fact-level provenance,Clinical data,MVP
+AR-015,Asynchronous pause/resume,Patient UX,MVP
+AR-016,Multimodal document/card acquisition,Data acquisition,Pilot
+AR-017,Patient-generated device data ingestion,Data acquisition,Later
+AR-018,Structured clinician summary with source drill-down,Clinician UX,MVP
+AR-019,Patient review and confirmation of final history,Safety/UX,MVP
+AR-020,Reusable perioperative passport,Longitudinal care,Later
+AR-021,Capacity/history-source boundaries,Safety,MVP
+AR-022,Temporal reasoning and change detection,Clinical reasoning,MVP
+AR-023,Explainable flags and clinician override with rationale,Safety/governance,MVP
+AR-024,Versioning and reproducibility of model/rules/terminology,Governance,MVP foundation
+AR-025,Downtime and integration failure modes,Safety/operations,MVP foundation
+AR-026,Prompt-injection and malicious-input resilience,Cybersecurity,MVP foundation
+AR-027,Consumer co-design,Evaluation,MVP development
+AR-028,Equity monitoring,Evaluation,Pilot
+AR-029,Formal clinical safety case and hazard log,Safety/governance,MVP development
+AR-030,Silent-mode prospective validation,Validation,Pilot prerequisite
+AR-031,Synthetic patient regression suite,Testing,MVP development
+AR-032,Conversation replay/audit of observable decision basis,Audit,MVP
+AR-033,Controlled learning and governed change process,Governance,Pilot
+AR-034,Research/outcomes data platform,Research,Later
+AR-035,Predictive cancellation/ICU/LOS/readmission models,Decision support,Research/later
+AR-036,SMART on FHIR contextual launch,Integration,Pilot
+AR-037,CDS Hooks/event-driven reassessment,Integration,Later
+AR-038,Multi-LHN/vendor-neutral adapter architecture,Architecture,MVP foundation
+AR-039,Knowledge provenance for every clinical rule,Governance,MVP foundation
+AR-040,Patient and clinician agenda tracking,Interview process,MVP

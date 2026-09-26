@@ -1,0 +1,52 @@
+Object,Field,Datatype,Cardinality,Required,Allowed/state examples,Notes
+Condition,condition_id,identifier,1,Yes,,Stable internal ID
+Condition,reported_name,text,1,Yes,,Preserve source wording
+Condition,normalised_code,coded,0..1,No,SNOMED CT/local,Normalisation never overwrites reported wording
+Condition,clinical_status,enum,1,Yes,active|resolved|inactive|unknown,No negative inference
+Condition,stability,enum,0..1,No,stable|worsening|new|uncertain,Current perioperative state
+Condition,verification_status,enum,1,Yes,verified|patient_reported|conflicting|unverified,
+Symptom,symptom_code,coded/text,1,Yes,,
+Symptom,present,state,1,Yes,present|absent|unknown,Explicit state
+Symptom,onset,datetime/relative,0..1,No,,
+Symptom,trajectory,enum,0..1,No,new|stable|improving|worsening|recurrent,
+Symptom,severity,coded/number,0..1,No,,
+Symptom,associated_features,array,0..n,No,,
+Medication,medication_id,identifier,1,Yes,,
+Medication,reported_name,text,1,Yes,,Never discard original
+Medication,normalised_ingredient,coded/text,0..1,No,AMT/RxNorm/local,
+Medication,dose,quantity/text,0..1,No,,
+Medication,route,coded,0..1,No,,
+Medication,frequency,coded/text,0..1,No,,
+Medication,indication,coded/text,0..1,No,,
+Medication,last_dose,datetime,0..1,Conditional,,Required for time-sensitive/high-risk drugs
+Medication,adherence,enum,0..1,No,regular|variable|not_taking|unknown,
+Medication,recent_change,boolean/text,0..1,No,,
+Medication,verification_status,enum,1,Yes,verified|patient_confirmed|conflicting|unverified,
+Allergy,allergy_id,identifier,1,Yes,,
+Allergy,reported_agent,text,1,Yes,,
+Allergy,normalised_agent,coded/text,0..1,No,,
+Allergy,reaction_phenotype,array,0..n,No,skin|mucosal|respiratory|cardiovascular|GI|other|unknown,
+Allergy,severity,enum,0..1,No,mild|moderate|severe|unknown,
+Allergy,timing,text/datetime,0..1,No,,
+Allergy,treatment_required,text,0..1,No,,
+Allergy,tolerated_reexposure,tri-state,0..1,No,yes|no|unknown,
+Allergy,formal_testing,text,0..1,No,,
+PreviousAnaestheticEvent,event_id,identifier,1,Yes,,
+PreviousAnaestheticEvent,procedure_date,date/approx,0..1,No,,
+PreviousAnaestheticEvent,facility,text,0..1,No,,
+PreviousAnaestheticEvent,anaesthetic_type,coded/text,0..1,No,,
+PreviousAnaestheticEvent,complication_type,array,0..n,No,difficult_airway|awareness|PONV|delayed_emergence|ICU|hypersensitivity|other,
+PreviousAnaestheticEvent,record_retrieval_status,enum,0..1,No,not_needed|requested|retrieved|unavailable,
+RiskAssessment,instrument,text,1,Yes,STOP-Bang|DASI|frailty tool|other,
+RiskAssessment,instrument_version,text,1,Yes,,
+RiskAssessment,input_fact_ids,array,1..n,Yes,,Traceable inputs
+RiskAssessment,score,number/text,0..1,Conditional,,
+RiskAssessment,risk_category,text,0..1,No,,
+RiskAssessment,missing_inputs,array,0..n,No,,
+RiskAssessment,calculation_method,enum,1,Yes,deterministic,Never free-text LLM arithmetic
+ClinicalIssue,issue_id,identifier,1,Yes,,
+ClinicalIssue,issue_type,enum,1,Yes,red_flag|conflict|missing_required|optimisation|record_retrieval|review,
+ClinicalIssue,severity,enum,1,Yes,routine|priority|urgent|emergency,
+ClinicalIssue,supporting_fact_ids,array,1..n,Yes,,
+ClinicalIssue,recommended_action,text/coded,1,Yes,,Rule-generated
+ClinicalIssue,status,enum,1,Yes,open|acknowledged|resolved,

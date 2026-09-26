@@ -1,0 +1,21 @@
+Prefix,Domain,Concept count,M0,M1,Conditional/Optional,Key derived construct
+CTX,"Patient, procedure and communication",17,15,0,2,
+CUR,Current health and recent change,14,10,0,4,
+CARD,Cardiovascular,25,16,0,9,RCRI/cardiovascular risk inputs where applicable
+FUNC,Functional capacity and exercise tolerance,16,11,0,5,DASI-compatible functional capacity; METs proxy
+RESP,Respiratory,17,9,0,8,ARISCAT-related respiratory risk inputs where applicable
+OSA,Sleep and obstructive sleep apnoea,16,7,1,8,STOP-Bang
+NEURO,Neurological and neuromuscular,13,8,0,5,
+RENAL,Renal and urological,12,3,0,9,
+ENDO,Endocrine and metabolic,14,5,0,9,
+GI,"Gastrointestinal, hepatic and aspiration risk",15,7,0,8,
+HAEM,"Haematology, bleeding, thrombosis and transfusion",15,10,0,5,Bleeding/VTE/PBM review flags
+ANAES,Previous surgery and anaesthesia,18,10,0,8,
+FAM,Family anaesthetic history,8,4,0,4,
+AIR,"Airway, dental and anatomical history",14,9,0,5,
+MED,Medications and therapies,26,17,1,8,Medication class flags; perioperative medication rules engine inputs
+ALL,Allergy and perioperative hypersensitivity,15,6,0,9,Perioperative hypersensitivity risk flag
+RES,"Frailty, cognition, nutrition and functional independence",27,1,21,5,Frailty/cognitive/nutritional risk inputs
+PSY,"Pain, psychological health and substance use",31,16,0,15,AUDIT-C inputs where alcohol items complete; OME/day where opioid medication data complete
+SOC,"Social circumstances, recovery and discharge",14,0,10,4,
+GOAL,"Patient priorities, goals, advance care planning and reproductive considerations",16,4,8,4,Shared decision-making/goals-of-care context

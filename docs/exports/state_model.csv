@@ -1,0 +1,10 @@
+Fact state,Meaning,Closes branch?,Handling
+PRESENT,Explicit positive report or authoritative positive source,Yes,Follow positive branch/rules
+ABSENT,Explicit denial or authoritative evidence of absence where valid,Yes,Never infer from missing data
+UNKNOWN,Patient/source cannot answer,No,Seek another source/review if material
+NOT_ASKED,Not yet evaluated,No,Eligible for conversation
+NOT_APPLICABLE,Rule establishes irrelevance in this context,Yes,Store rule/reason
+UNVERIFIED,Reported but not corroborated where verification matters,Usually no,Preserve source and seek verification
+CONFLICTING,Credible sources disagree,No,Preserve both and create ClinicalIssue
+STALE,Source too old for current decision,No,Refresh if required
+RESOLVED,Open issue reconciled,Yes,Retain audit trail
