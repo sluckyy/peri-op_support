@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { api } from '../api.js'
+import { api, formatApiError } from '../api.js'
 
 const props = defineProps({ sessionId: { type: String, required: true } })
 const emit = defineEmits(['added'])
@@ -54,7 +54,7 @@ async function submit() {
     emit('added', summary)
     form.value = ''
   } catch (e) {
-    error.value = e.body?.detail ?? e.message
+    error.value = formatApiError(e)
   } finally {
     busy.value = false
   }

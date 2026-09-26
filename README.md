@@ -123,26 +123,47 @@ gaps, reconciliation, safety gates, task ownership, audit.
 ## v1.1 Model Layer status (against Table 13's MVP-required list)
 
 The Model Layer (§6A) sits conceptually between raw conversation and the
-Conversation Orchestrator above — but the Orchestrator itself isn't built
-yet (see the Phase 1 table above), so nothing below is wired into a live
-conversation loop. What exists is a real, tested *data model and
-reasoning-support library* for it, exercised only through unit tests so
-far, not through the demo API/UI.
+Conversation Orchestrator — but the Orchestrator itself isn't built yet
+(see the Phase 1 table above), so none of this is wired into a live
+*conversation loop* (there's no LLM turning patient speech into these
+objects automatically). What's real: the underlying data model, the
+epistemic/causal/psychological-safety/humour reasoning, persistence
+(`db/migrations/0002_model_layer.sql`, `periop_core.model_layer_db`),
+and a full round-trip through the demo API and Vue UI — you can create a
+hypothesis, attempt (and get blocked from) an ungrounded promotion, then
+promote it properly with evidence; log a repair, defer it (which
+requires an obligation), resolve it; watch a CRITICAL open repair block
+session closure end-to-end through the UI; apply psychological-safety
+signals and watch the estimate move; check the humour gate; and run the
+causal-discrimination calculator — all exercised in a real headless-
+browser run, not just built.
 
 | Table 13 capability | Status |
 |---|---|
-| Shared Meaning Workspace (GroundedProposition, ConversationalHypothesis, Uncertainty, Contradiction) | **Implemented** (`periop_core.model_layer`). GroundedProposition is floored at L4 (patient-grounded); ConversationalHypothesis is capped below L4 — enforced as pydantic validators, not just documentation. |
-| Epistemic ladder and provenance | **Implemented** (`periop_core.epistemic`). `can_promote()` enforces both spec-mandated gates: L2→L4+ requires grounding evidence, →L6 requires clinician adjudication. Tested against both the permitted and blocked cases for each. |
-| Repair queue and dependency-aware correction | **Implemented**. `RepairRequirement` (`periop_core.model_layer`) refuses to be constructed as DEFERRED without a reason *and* a linked `ProspectiveObligation` (6A.15's "deferral creates an obligation"). `periop_core.model_layer_gate.find_dependents` does real (if narrow — see its docstring on the reference-string convention it depends on) dependency-graph propagation, and `evaluate_closure` now blocks session closure on an OPEN CRITICAL repair the same way it blocks on an unowned critical Task. |
-| Patient agenda and prospective obligations | **Implemented** — PatientAgendaItem already existed (Phase 1); `ProspectiveObligation` is new and has no silent-expiry status (only PENDING/DUE/RESOLVED/HANDED_OFF). |
-| Working-memory/attention selection | **Implemented** (`periop_core.attention`). A real, tested weighted-sum implementation of Attention_i(t), including forced inclusion of high-risk items beyond the working-set size cap. **Documented limitation**: the weights are a reasonable starting point, not a calibrated set — see the module docstring. |
-| Psychological-safety actions: humility, normalisation, invite correction | **Partially implemented**. `periop_core.psychological_safety` provides a bounded, named-signal heuristic for PSt — explicitly *not* a validated psychological measure (see its docstring). The action classes themselves (INVITE_CORRECTION, ACKNOWLEDGE_LIMITATION, NORMALISE, etc.) exist in the `ActionType` enum but nothing selects them yet — that's Orchestrator work. |
-| Interaction adaptation within approved bounds | **Data model only**. `PersonalAdaptationState` exists with bounded fields; there is no update logic yet (would need real interaction data to adapt from, which requires the conversational shell). |
-| Causal hypothesis representation | **Implemented** (`periop_core.causal_reasoning`). Real Shannon-entropy-based `expected_clinical_discrimination` (ECD) — verified against hand-computed values for a perfectly discriminating question (ECD = full prior entropy) and an uninformative one (ECD = 0). `CausalHypothesis.status` cannot reach ADJUDICATED without an explicit clinician marker. |
-| Affiliative humour | **Implemented, off by default** (`periop_core.humour_policy`). `is_humour_permitted` gates on the feature flag first — every other suppression condition (distress, safety disclosure, conflict, bereavement, uncertain receptivity, patient-directed target, implied incompetence) is also enforced and tested independently. |
+| Shared Meaning Workspace (GroundedProposition, ConversationalHypothesis, Uncertainty, Contradiction) | **Implemented and in the demo** for propositions/hypotheses (create + promote via the UI). GroundedProposition is floored at L4 (patient-grounded); ConversationalHypothesis is capped below L4 — enforced as pydantic validators. Uncertainty/Contradiction have DB persistence (`periop_core.model_layer_db`) but no dedicated UI yet — read/write them directly if needed. |
+| Epistemic ladder and provenance | **Implemented and in the demo**. `periop_core.epistemic.can_promote()` enforces both spec-mandated gates: L2→L4+ requires grounding evidence, →L6 requires clinician adjudication; the UI's "Promote" button surfaces a blocked attempt's exact reason (verified in a browser run, not just a test). |
+| Repair queue and dependency-aware correction | **Implemented and in the demo**. Logging a DEFERRED repair without a reason *and* obligation is rejected (422); the UI creates the linked `ProspectiveObligation` inline. An OPEN CRITICAL repair blocks session closure through the full stack (core → API → UI), confirmed visually. `periop_core.model_layer_gate.find_dependents` (correction-propagation) is implemented and unit-tested but not yet exposed in the demo UI. |
+| Patient agenda and prospective obligations | **Implemented** — PatientAgendaItem already existed (Phase 1); `ProspectiveObligation` is new, has no silent-expiry status, and is created/displayed via the repair-deferral flow in the demo. |
+| Working-memory/attention selection | **Implemented, not in the demo**. A real, tested weighted-sum implementation of Attention_i(t) in `periop_core.attention`, including forced inclusion of high-risk items beyond the working-set size cap. Not surfaced in the UI — there's no live conversation feed of candidate items to rank yet. **Documented limitation**: the weights are a reasonable starting point, not a calibrated set. |
+| Psychological-safety actions: humility, normalisation, invite correction | **Partially implemented and in the demo** for the PSt estimate itself: `periop_core.psychological_safety`'s bounded, named-signal heuristic is applied and persisted per-session, with signal buttons in the UI. Explicitly *not* a validated psychological measure (see its docstring). The action classes (INVITE_CORRECTION, ACKNOWLEDGE_LIMITATION, NORMALISE, etc.) exist in `ActionType` but nothing selects them in a live conversation — that's Orchestrator work. |
+| Interaction adaptation within approved bounds | **Data model only**, not in the demo. `PersonalAdaptationState` exists with bounded fields; there is no update logic yet (would need real interaction data to adapt from, which requires the conversational shell). |
+| Causal hypothesis representation | **Implemented and in the demo** as a standalone calculator (not tied to stored `CausalHypothesis` rows yet). Real Shannon-entropy-based `expected_clinical_discrimination` (ECD) in `periop_core.causal_reasoning` — verified against hand-computed values for a perfectly discriminating question (ECD = full prior entropy) and an uninformative one (ECD = 0), and exercised live via `POST /api/tools/causal-ecd`. `CausalHypothesis.status` cannot reach ADJUDICATED without an explicit clinician marker; the object has DB persistence but no dedicated create/list UI yet. |
+| Affiliative humour | **Implemented and in the demo, off by default** (`periop_core.humour_policy`). `is_humour_permitted` gates on the feature flag first — every other suppression condition (distress, safety disclosure, conflict, bereavement, uncertain receptivity, patient-directed target, implied incompetence) is enforced, tested, and checkable live via the UI's humour-check form. |
 | Continuous-time silence/turn model (6A.6) | **Not implemented** — correctly deferred per Table 13 ("deferred to voice implementation"); this is a text-first MVP. |
 | Population policy learning (6A.14) | **Not implemented** — correctly out of scope per Table 13 ("offline research/governance capability, not autonomous MVP runtime"). |
-| `ConversationStateEnvelope` (Table 11, the Model Layer → Orchestrator contract) | **Data model only**. The object exists and validates its own internal consistency (e.g. an action class can't be both recommended and prohibited at once), but nothing populates or consumes it yet — there's no Orchestrator on the other end.  |
+| `ConversationStateEnvelope` (Table 11, the Model Layer → Orchestrator contract) | **Data model only**. The object exists and validates its own internal consistency (e.g. an action class can't be both recommended and prohibited at once), but nothing populates or consumes it yet — there's no Orchestrator on the other end. |
+
+### Demo shortcuts specific to the Model Layer wiring
+
+Same spirit as the existing "add assertion" shortcut (see
+`periop_api/__init__.py`): the demo lets a client create a
+`ConversationalHypothesis` or `RepairRequirement` directly via a form.
+In the real system these would only ever come from governed extraction
+over an actual conversation turn, mediated by the (unbuilt) Orchestrator
+— never a client-facing "create hypothesis" endpoint. The causal-ECD
+calculator and humour-check endpoints are genuinely standalone tools
+(not shortcuts for something that will later be automatic), since they
+don't correspond to a stored clinical object at all.
 
 ## Running the tests
 
@@ -151,23 +172,24 @@ pip install -e .
 python3 -m pytest -q
 ```
 
-98 tests currently pass: the model/reconciliation/gap-engine/closure/
+121 tests currently pass: the model/reconciliation/gap-engine/closure/
 eligibility unit tests, DB round-trip tests (skipped automatically if no
-local Postgres is reachable), HTTP-level API tests, and the v1.1 Model
-Layer tests (epistemic ladder, attention scoring, causal ECD/entropy,
-psychological safety, humour policy, correction propagation). Where a
-test pins down a *documented current limitation* (e.g. the engine not
-yet resolving a stale-vs-current conflict via freshness, or a
-single-source assertion staying UNVERIFIED rather than auto-confirming),
-its docstring says so — it is not asserting that behaviour is correct,
-only that it's what the code does right now.
+local Postgres is reachable), HTTP-level API tests for both the Phase 1
+core and the v1.1 Model Layer endpoints, and the Model Layer unit tests
+(epistemic ladder, attention scoring, causal ECD/entropy, psychological
+safety, humour policy, correction propagation). Where a test pins down a
+*documented current limitation* (e.g. the engine not yet resolving a
+stale-vs-current conflict via freshness, or a single-source assertion
+staying UNVERIFIED rather than auto-confirming), its docstring says so —
+it is not asserting that behaviour is correct, only that it's what the
+code does right now.
 
 ## Running the demo locally
 
 ```
 # 1. Postgres (adjust to however you run Postgres locally)
 createdb periop_core
-psql -d periop_core -f db/migrations/0001_init.sql
+for f in db/migrations/*.sql; do psql -d periop_core -f "$f"; done
 
 # 2. Backend
 pip install -e .

@@ -1,5 +1,23 @@
 const BASE = '/api'
 
+// FastAPI's HTTPException(detail=...) can be a plain string, or a dict
+// such as {"reasons": [...]} or {"message": "..."}. Centralised here so
+// every component shows a readable message instead of accidentally
+// interpolating the raw object (which Vue will JSON.stringify).
+export function formatApiError(e) {
+  const detail = e?.body?.detail
+  if (typeof detail === 'string') return detail
+  if (detail && typeof detail === 'object') {
+    const reasons = detail.reasons ?? detail.blocking_reasons
+    const parts = []
+    if (typeof detail.message === 'string') parts.push(detail.message)
+    if (Array.isArray(reasons)) parts.push(reasons.join('; '))
+    if (parts.length) return parts.join(': ')
+  }
+  if (typeof e?.body?.message === 'string') return e.body.message
+  return e?.message ?? String(e)
+}
+
 async function request(path, options = {}) {
   const resp = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json' },
@@ -38,4 +56,41 @@ export const api = {
 
   closeSession: (sessionId) =>
     request(`/sessions/${sessionId}/close`, { method: 'POST' }),
+
+  // v1.1 Model Layer (§6A)
+  createHypothesis: (sessionId, payload) =>
+    request(`/sessions/${sessionId}/hypotheses`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  promoteHypothesis: (sessionId, hypothesisId, payload) =>
+    request(`/sessions/${sessionId}/hypotheses/${hypothesisId}/promote`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  createRepair: (sessionId, payload) =>
+    request(`/sessions/${sessionId}/repairs`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  resolveRepair: (sessionId, repairId) =>
+    request(`/sessions/${sessionId}/repairs/${repairId}/resolve`, { method: 'POST' }),
+
+  applyPsychSafetySignal: (sessionId, signalNames) =>
+    request(`/sessions/${sessionId}/psychological-safety/signal`, {
+      method: 'POST',
+      body: JSON.stringify({ signal_names: signalNames }),
+    }),
+
+  checkHumour: (sessionId, payload) =>
+    request(`/sessions/${sessionId}/humour/check`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  causalEcd: (payload) =>
+    request('/tools/causal-ecd', { method: 'POST', body: JSON.stringify(payload) }),
 }

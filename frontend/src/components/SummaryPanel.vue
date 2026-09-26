@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { api } from '../api.js'
+import { api, formatApiError } from '../api.js'
 
 const props = defineProps({ summary: { type: Object, required: true } })
 const emit = defineEmits(['refresh', 'closed'])
@@ -22,7 +22,7 @@ async function attemptClose() {
     const updated = await api.closeSession(props.summary.session.session_id)
     emit('closed', updated)
   } catch (e) {
-    error.value = e.body?.detail?.message ?? e.message
+    error.value = formatApiError(e)
     emit('refresh')
   } finally {
     busy.value = false

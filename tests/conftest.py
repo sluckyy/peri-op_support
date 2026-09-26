@@ -14,7 +14,8 @@ import psycopg
 import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-MIGRATION_SQL = REPO_ROOT / "db" / "migrations" / "0001_init.sql"
+MIGRATIONS_DIR = REPO_ROOT / "db" / "migrations"
+MIGRATION_FILES = sorted(MIGRATIONS_DIR.glob("*.sql"))  # applied in filename order (0001, 0002, ...)
 
 ADMIN_CONNINFO = os.environ.get("PERIOP_TEST_ADMIN_CONNINFO", "dbname=postgres")
 TEST_DB_NAME = "periop_pytest"
@@ -42,7 +43,8 @@ def db_conninfo():
         test_conninfo = f"{test_conninfo} dbname={TEST_DB_NAME}"
 
     with psycopg.connect(test_conninfo, autocommit=True) as conn:
-        conn.execute(MIGRATION_SQL.read_text())
+        for migration_file in MIGRATION_FILES:
+            conn.execute(migration_file.read_text())
 
     yield test_conninfo
 

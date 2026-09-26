@@ -16,15 +16,20 @@ Uses `az acr build` throughout, which builds the container image in Azure
   access (the dev/test-only `0.0.0.0-255.255.255.255` firewall rule).
 - `az login` done, subscription set.
 
-## 1. Apply the database migration
+## 1. Apply the database migrations
 
-Do this once, before first use. From your machine (needs `psql`, or use
-[Azure Cloud Shell](https://shell.azure.com) which has it preinstalled):
+Do this once, before first use, and again whenever a new migration file
+is added (they're numbered and safe to (re-)apply in order — each only
+creates its own new tables/types). From your machine (needs `psql`, or
+use [Azure Cloud Shell](https://shell.azure.com) which has it
+preinstalled):
 
 ```bash
-psql "host=periop-support-pg.postgres.database.azure.com \
-      port=5432 dbname=periop_core user=periopadmin sslmode=require" \
-     -f db/migrations/0001_init.sql
+for f in db/migrations/*.sql; do
+  psql "host=periop-support-pg.postgres.database.azure.com \
+        port=5432 dbname=periop_core user=periopadmin sslmode=require" \
+       -f "$f"
+done
 ```
 
 You'll be prompted for the admin password you set when creating the
