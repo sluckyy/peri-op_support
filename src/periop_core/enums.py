@@ -158,7 +158,13 @@ class ResolutionOption(str, Enum):
 
 
 class ActionType(str, Enum):
-    """Table 7 — the full InterviewAction vocabulary."""
+    """Table 7 — the full InterviewAction vocabulary, plus Table 12's
+    Model Layer additions (v1.1 §6A.12) appended below the original set.
+
+    AFFILIATIVE_HUMOUR is feature-flagged off by default (Table 13) — see
+    periop_core.humour_policy. It exists in the vocabulary so a governed
+    action contract can name it, not so it fires by default.
+    """
 
     OPEN_INVITATION = "OPEN_INVITATION"
     FACILITATE = "FACILITATE"
@@ -178,6 +184,18 @@ class ActionType(str, Enum):
     RETURN_TO_TOPIC = "RETURN_TO_TOPIC"
     FINAL_OPEN = "FINAL_OPEN"
     TEACH_BACK = "TEACH_BACK"
+
+    # -- Table 12 (v1.1 §6A.12): Model Layer additions --
+    WAIT = "WAIT"
+    BACKCHANNEL = "BACKCHANNEL"
+    ACKNOWLEDGE = "ACKNOWLEDGE"
+    NORMALISE = "NORMALISE"
+    VALIDATE_EXPERIENCE = "VALIDATE_EXPERIENCE"
+    INVITE_CORRECTION = "INVITE_CORRECTION"
+    ACKNOWLEDGE_LIMITATION = "ACKNOWLEDGE_LIMITATION"
+    ACKNOWLEDGE_ERROR = "ACKNOWLEDGE_ERROR"
+    AFFILIATIVE_HUMOUR = "AFFILIATIVE_HUMOUR"
+    DEFER_WITH_OBLIGATION = "DEFER_WITH_OBLIGATION"
 
 
 class InterviewActionStatus(str, Enum):
@@ -293,3 +311,118 @@ class EligibilityResult(str, Enum):
 
     ELIGIBLE = "ELIGIBLE"
     INELIGIBLE = "INELIGIBLE"
+
+
+# ============================================================
+# v1.1 Model Layer (§6A) — see
+# docs/exports/full_project_specification_v1.1_model_layer.md
+# ============================================================
+
+
+class EpistemicLevel(str, Enum):
+    """Table 10 — the epistemic ladder (6A.3). Promotion is monotonic and
+    only permitted when the required evidence exists — see
+    periop_core.epistemic.can_promote(). A level here is a property of a
+    single proposition's grounding, distinct from InformationState (which
+    describes whether a *clinical requirement* has been satisfied) and
+    from AssertionState/Certainty (which describe a single sourced
+    statement). All three coexist deliberately per the Model Layer's own
+    layering: L0-L1 concern raw/literal interpretation of an utterance,
+    L2-L3 concern conversational hypotheses, L4-L6 concern how firmly a
+    proposition may be treated as clinically grounded truth.
+    """
+
+    L0_RAW_UTTERANCE = "L0_RAW_UTTERANCE"
+    L1_LITERAL_INTERPRETATION = "L1_LITERAL_INTERPRETATION"
+    L2_PRAGMATIC_INTERPRETATION = "L2_PRAGMATIC_INTERPRETATION"
+    L3_CLINICAL_HYPOTHESIS = "L3_CLINICAL_HYPOTHESIS"
+    L4_PATIENT_GROUNDED = "L4_PATIENT_GROUNDED"
+    L5_EXTERNALLY_VERIFIED = "L5_EXTERNALLY_VERIFIED"
+    L6_CLINICALLY_ADJUDICATED = "L6_CLINICALLY_ADJUDICATED"
+
+
+# Ordering used by periop_core.epistemic to detect a "jump" promotion.
+EPISTEMIC_LEVEL_ORDER: tuple[EpistemicLevel, ...] = (
+    EpistemicLevel.L0_RAW_UTTERANCE,
+    EpistemicLevel.L1_LITERAL_INTERPRETATION,
+    EpistemicLevel.L2_PRAGMATIC_INTERPRETATION,
+    EpistemicLevel.L3_CLINICAL_HYPOTHESIS,
+    EpistemicLevel.L4_PATIENT_GROUNDED,
+    EpistemicLevel.L5_EXTERNALLY_VERIFIED,
+    EpistemicLevel.L6_CLINICALLY_ADJUDICATED,
+)
+
+
+class RepairType(str, Enum):
+    """6A.4 — the kinds of conversational problem the Model Layer must be
+    able to detect and represent."""
+
+    RECOGNITION = "RECOGNITION"
+    REFERENCE = "REFERENCE"
+    SEMANTICS = "SEMANTICS"
+    TEMPORALITY = "TEMPORALITY"
+    FACTUAL_ACCURACY = "FACTUAL_ACCURACY"
+    INTERPRETATION = "INTERPRETATION"
+    CONTRADICTION = "CONTRADICTION"
+    SCOPE = "SCOPE"
+    PRAGMATICS = "PRAGMATICS"
+    INTERRUPTION = "INTERRUPTION"
+    EMOTIONAL_MISATTUNEMENT = "EMOTIONAL_MISATTUNEMENT"
+
+
+class RepairStatus(str, Enum):
+    """6A.15: 'Repair is mandatory when material misunderstanding is
+    detected' — a RepairRequirement must remain OPEN until REPAIRED,
+    DEFERRED (with a reason and, if still relevant, an obligation per
+    6A.15), or HANDED_OFF. It cannot silently disappear."""
+
+    OPEN = "OPEN"
+    REPAIRED = "REPAIRED"
+    DEFERRED = "DEFERRED"
+    HANDED_OFF = "HANDED_OFF"
+
+
+class HypothesisStatus(str, Enum):
+    """Status of a ConversationalHypothesis or CausalHypothesis. Mirrors
+    the epistemic-ladder spirit: a hypothesis stays a hypothesis (Table 9:
+    'cannot be projected as fact') until explicitly promoted/adjudicated
+    or explicitly retracted by a correction."""
+
+    ACTIVE = "ACTIVE"
+    PROMOTED = "PROMOTED"
+    RETRACTED = "RETRACTED"
+    SUPERSEDED = "SUPERSEDED"
+
+
+class CausalRelationStatus(str, Enum):
+    """CausalHypothesis.status (Table 9 / 6A.10). Chronology, association
+    and causation are kept as distinct relations — see
+    periop_core.causal_reasoning."""
+
+    HYPOTHESIS = "HYPOTHESIS"
+    DISCRIMINATED = "DISCRIMINATED"  # a discriminating question was asked
+    ADJUDICATED = "ADJUDICATED"  # clinician-owned judgement reached
+    RETRACTED = "RETRACTED"
+
+
+class ObligationStatus(str, Enum):
+    """ProspectiveObligation.status (Table 9 / 6A.5). 6A.15: 'Deferral
+    creates an obligation when the issue remains relevant' — an
+    obligation must not simply be forgotten, so RESOLVED/HANDED_OFF are
+    the only terminal states; there is no silent "expired" state."""
+
+    PENDING = "PENDING"
+    DUE = "DUE"
+    RESOLVED = "RESOLVED"
+    HANDED_OFF = "HANDED_OFF"
+
+
+class ContradictionStatus(str, Enum):
+    """Contradiction.status (Table 9). Distinct from the Clinical State
+    layer's ConflictStatus — see periop_core.model_layer module docstring
+    for how a conversation-level Contradiction relates to a Clinical
+    State Conflict."""
+
+    OPEN = "OPEN"
+    RECONCILED = "RECONCILED"
+    ESCALATED = "ESCALATED"

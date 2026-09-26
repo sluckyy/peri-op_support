@@ -28,6 +28,7 @@ python3 scripts/export_dataset.py
 | `fhir_au_detailed_mapping.csv` | Provenance, Uncertainty & Reconciliation v1.0.xlsx | FHIR AU Detailed Mapping |
 | `scoping_review_and_requirements_v1.1.md` | Scoping Review and Requirements v1.1.docx | full document |
 | `full_project_specification_v1.0.md` | Full Project Specification v1.0.docx | full document |
+| `full_project_specification_v1.1_model_layer.md` | Full Project Specification v1.1 (Model Layer).docx | full document |
 
 **Note on versions:** the FinalBatch workbook is used as the export source
 for the Clinical Dataset sheets because its `Domain Validation` log covers
@@ -36,3 +37,11 @@ recorded validation for the first 5 domains. The underlying 343 concept
 rows are otherwise identical between the two files. Both original workbooks
 are kept in `docs/source/` for provenance; only the FinalBatch one should be
 treated as current.
+
+**Two independent v1.1 lineages, not yet merged:** `docs/addenda/
+v1.1-gap-remediation.md` extends v1.0 with consent/eligibility/staffing/
+DSAR/regulatory-anchor decisions (chat-based review). The "Full Project
+Specification v1.1 (Model Layer)" docx independently extends v1.0 with a
+new §6A (the conversational Model Layer). Neither has been folded into the
+other yet — treat v1.0 + both v1.1 documents as the current full picture
+until someone produces a single consolidated v1.2.

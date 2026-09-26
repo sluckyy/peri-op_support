@@ -70,20 +70,32 @@ scripts/            Utility scripts (currently just the docs exporter).
 
 ## Specification documents
 
-The governing specification is
+The base specification is
 `docs/source/Perioperative_Conversational_AI_Full_Project_and_Technical_Specification_v1.0.docx`
 (readable copy: `docs/exports/full_project_specification_v1.0.md`), which
 consolidates the earlier scoping review, clinical dataset, provenance/
-reconciliation model and interoperability design into one document. Six
-gaps identified in review of v1.0 — and the product/governance decisions
-made to resolve them — are recorded in
-`docs/addenda/v1.1-gap-remediation.md`. Read that addendum alongside v1.0;
-it is not yet folded into a new docx revision.
+reconciliation model and interoperability design into one document.
 
-**One item in the addendum is an unresolved, blocking prerequisite, not a
-decision:** real-time clinical handoff staffing during pilot hours. The
-system's safety design (fail-closed to human handoff) depends on it. See
-addendum item 3.
+**Two independent, not-yet-merged v1.1 extensions sit on top of it:**
+- `docs/addenda/v1.1-gap-remediation.md` — six gaps identified in review
+  of v1.0 and the product/governance decisions made to resolve them
+  (consent model, intake eligibility, staffing, DSAR, regulatory anchor,
+  outcome-calibration deferral).
+- `docs/source/..._v1.1_Model_Layer.docx` (readable copy:
+  `docs/exports/full_project_specification_v1.1_model_layer.md`) — adds
+  §6A, the conversational Model Layer: a formal state model, epistemic
+  grounding ladder, repair/truth-maintenance, attention-bounded working
+  memory, psychological safety, personal adaptation, causal-hypothesis
+  reasoning and an expanded action vocabulary, sitting between raw
+  conversation and the (not-yet-built) Conversation Orchestrator.
+
+Read all three alongside each other; neither v1.1 document is aware of
+the other's changes.
+
+**One item in the gap-remediation addendum is an unresolved, blocking
+prerequisite, not a decision:** real-time clinical handoff staffing
+during pilot hours. The system's safety design (fail-closed to human
+handoff) depends on it. See addendum item 3.
 
 ## What's implemented (honest accounting against Full Spec Table 24, Phase 1)
 
@@ -108,6 +120,30 @@ gaps, reconciliation, safety gates, task ownership, audit.
 | Demo frontend | **Implemented**: a single Vue page exercising the full demo flow, including the eligibility-rejection path and a live safety-critical-conflict scenario. Confirmed working in an actual headless-Chromium run, not just `npm run build` succeeding. |
 | LLM extraction/language, conversation orchestrator, InterviewAction selection, validator stack, FHIR adapter, real event architecture | **Not implemented** — these are Phase 2/3 per Table 24 and were deliberately left out rather than stubbed with empty classes that would misrepresent progress. |
 
+## v1.1 Model Layer status (against Table 13's MVP-required list)
+
+The Model Layer (§6A) sits conceptually between raw conversation and the
+Conversation Orchestrator above — but the Orchestrator itself isn't built
+yet (see the Phase 1 table above), so nothing below is wired into a live
+conversation loop. What exists is a real, tested *data model and
+reasoning-support library* for it, exercised only through unit tests so
+far, not through the demo API/UI.
+
+| Table 13 capability | Status |
+|---|---|
+| Shared Meaning Workspace (GroundedProposition, ConversationalHypothesis, Uncertainty, Contradiction) | **Implemented** (`periop_core.model_layer`). GroundedProposition is floored at L4 (patient-grounded); ConversationalHypothesis is capped below L4 — enforced as pydantic validators, not just documentation. |
+| Epistemic ladder and provenance | **Implemented** (`periop_core.epistemic`). `can_promote()` enforces both spec-mandated gates: L2→L4+ requires grounding evidence, →L6 requires clinician adjudication. Tested against both the permitted and blocked cases for each. |
+| Repair queue and dependency-aware correction | **Implemented**. `RepairRequirement` (`periop_core.model_layer`) refuses to be constructed as DEFERRED without a reason *and* a linked `ProspectiveObligation` (6A.15's "deferral creates an obligation"). `periop_core.model_layer_gate.find_dependents` does real (if narrow — see its docstring on the reference-string convention it depends on) dependency-graph propagation, and `evaluate_closure` now blocks session closure on an OPEN CRITICAL repair the same way it blocks on an unowned critical Task. |
+| Patient agenda and prospective obligations | **Implemented** — PatientAgendaItem already existed (Phase 1); `ProspectiveObligation` is new and has no silent-expiry status (only PENDING/DUE/RESOLVED/HANDED_OFF). |
+| Working-memory/attention selection | **Implemented** (`periop_core.attention`). A real, tested weighted-sum implementation of Attention_i(t), including forced inclusion of high-risk items beyond the working-set size cap. **Documented limitation**: the weights are a reasonable starting point, not a calibrated set — see the module docstring. |
+| Psychological-safety actions: humility, normalisation, invite correction | **Partially implemented**. `periop_core.psychological_safety` provides a bounded, named-signal heuristic for PSt — explicitly *not* a validated psychological measure (see its docstring). The action classes themselves (INVITE_CORRECTION, ACKNOWLEDGE_LIMITATION, NORMALISE, etc.) exist in the `ActionType` enum but nothing selects them yet — that's Orchestrator work. |
+| Interaction adaptation within approved bounds | **Data model only**. `PersonalAdaptationState` exists with bounded fields; there is no update logic yet (would need real interaction data to adapt from, which requires the conversational shell). |
+| Causal hypothesis representation | **Implemented** (`periop_core.causal_reasoning`). Real Shannon-entropy-based `expected_clinical_discrimination` (ECD) — verified against hand-computed values for a perfectly discriminating question (ECD = full prior entropy) and an uninformative one (ECD = 0). `CausalHypothesis.status` cannot reach ADJUDICATED without an explicit clinician marker. |
+| Affiliative humour | **Implemented, off by default** (`periop_core.humour_policy`). `is_humour_permitted` gates on the feature flag first — every other suppression condition (distress, safety disclosure, conflict, bereavement, uncertain receptivity, patient-directed target, implied incompetence) is also enforced and tested independently. |
+| Continuous-time silence/turn model (6A.6) | **Not implemented** — correctly deferred per Table 13 ("deferred to voice implementation"); this is a text-first MVP. |
+| Population policy learning (6A.14) | **Not implemented** — correctly out of scope per Table 13 ("offline research/governance capability, not autonomous MVP runtime"). |
+| `ConversationStateEnvelope` (Table 11, the Model Layer → Orchestrator contract) | **Data model only**. The object exists and validates its own internal consistency (e.g. an action class can't be both recommended and prohibited at once), but nothing populates or consumes it yet — there's no Orchestrator on the other end.  |
+
 ## Running the tests
 
 ```
@@ -115,14 +151,16 @@ pip install -e .
 python3 -m pytest -q
 ```
 
-37 tests currently pass: the model/reconciliation/gap-engine/closure/
+98 tests currently pass: the model/reconciliation/gap-engine/closure/
 eligibility unit tests, DB round-trip tests (skipped automatically if no
-local Postgres is reachable), and HTTP-level API tests. Where a test pins
-down a *documented current limitation* (e.g. the engine not yet resolving
-a stale-vs-current conflict via freshness, or a single-source assertion
-staying UNVERIFIED rather than auto-confirming), its docstring says so —
-it is not asserting that behaviour is correct, only that it's what the
-code does right now.
+local Postgres is reachable), HTTP-level API tests, and the v1.1 Model
+Layer tests (epistemic ladder, attention scoring, causal ECD/entropy,
+psychological safety, humour policy, correction propagation). Where a
+test pins down a *documented current limitation* (e.g. the engine not
+yet resolving a stale-vs-current conflict via freshness, or a
+single-source assertion staying UNVERIFIED rather than auto-confirming),
+its docstring says so — it is not asserting that behaviour is correct,
+only that it's what the code does right now.
 
 ## Running the demo locally
 

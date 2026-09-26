@@ -1,4 +1,4 @@
-"""Closure gate (Table 23 step 16; INV-004/010/014).
+"""Closure gate (Table 23 step 16; INV-004/010/014; v1.1 §6A.15).
 
 Scope honestly stated: this module implements the *closure gate* only --
 the deterministic check of whether a session may move to COMPLETE,
@@ -18,7 +18,15 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from periop_core.models import Conflict, OpenTask, PatientAgendaItem
-from periop_core.enums import AgendaPriority, AgendaStatus, ConflictStatus, TaskStatus
+from periop_core.model_layer import RepairRequirement
+from periop_core.enums import (
+    AgendaPriority,
+    AgendaStatus,
+    ConflictStatus,
+    Materiality,
+    RepairStatus,
+    TaskStatus,
+)
 
 
 class ClosureOutcome(str, Enum):
@@ -38,10 +46,20 @@ def evaluate_closure(
     open_tasks: list[OpenTask],
     agenda_items: list[PatientAgendaItem],
     conflicts: list[Conflict],
+    repair_requirements: list[RepairRequirement] = (),
 ) -> ClosureResult:
     """INV-010: a critical unowned task blocks completion outright.
     INV-014 (non-critical) and open conflicts/tasks otherwise downgrade a
     would-be COMPLETE to COMPLETE_WITH_OPEN_ACTIONS rather than blocking.
+
+    v1.1 §6A.15 ('repair is mandatory when material misunderstanding is
+    detected'): an OPEN RepairRequirement of CRITICAL materiality blocks
+    closure the same way an unowned critical Task does -- a session
+    should not close over an unresolved, safety-relevant conversational
+    misunderstanding. HIGH/MODERATE/LOW-materiality open repairs
+    downgrade to COMPLETE_WITH_OPEN_ACTIONS, matching how conflicts are
+    handled. `repair_requirements` defaults to `()` so existing callers
+    that don't yet track them are unaffected.
     """
     blocking_reasons: list[str] = []
     open_action_reasons: list[str] = []
@@ -68,6 +86,19 @@ def evaluate_closure(
             open_action_reasons.append(
                 f"High-priority patient agenda item {item.agenda_item_id} "
                 f"still {item.status.value} (INV-014)"
+            )
+
+    for repair in repair_requirements:
+        if repair.status != RepairStatus.OPEN:
+            continue
+        if repair.materiality == Materiality.CRITICAL:
+            blocking_reasons.append(
+                f"Critical unresolved repair requirement {repair.repair_id} "
+                f"({repair.repair_type.value}) still OPEN (v1.1 §6A.15)"
+            )
+        else:
+            open_action_reasons.append(
+                f"Repair requirement {repair.repair_id} ({repair.materiality.value}) still OPEN"
             )
 
     if blocking_reasons:
