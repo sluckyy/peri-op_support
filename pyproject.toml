@@ -5,11 +5,15 @@ description = "Deterministic clinical core for the Perioperative Conversational 
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2,<3",
+    "psycopg[binary]>=3,<4",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
+    "httpx>=0.27",
 ]
 
 [build-system]

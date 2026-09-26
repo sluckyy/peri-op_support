@@ -52,12 +52,12 @@ def evaluate_closure(
                 f"Critical task {task.task_id} has no owner (INV-010)"
             )
         elif task.status not in (TaskStatus.RESOLVED, TaskStatus.CANCELLED):
-            open_action_reasons.append(f"Task {task.task_id} still {task.status}")
+            open_action_reasons.append(f"Task {task.task_id} still {task.status.value}")
 
     for conflict in conflicts:
         if conflict.status == ConflictStatus.OPEN:
             open_action_reasons.append(
-                f"Conflict {conflict.conflict_id} ({conflict.materiality}) still OPEN"
+                f"Conflict {conflict.conflict_id} ({conflict.materiality.value}) still OPEN"
             )
 
     for item in agenda_items:
@@ -67,7 +67,7 @@ def evaluate_closure(
         ):
             open_action_reasons.append(
                 f"High-priority patient agenda item {item.agenda_item_id} "
-                f"still {item.status} (INV-014)"
+                f"still {item.status.value} (INV-014)"
             )
 
     if blocking_reasons:

@@ -27,11 +27,43 @@ src/periop_core/   The deterministic clinical core (Python). See "What's
                     implemented" below for exactly how much of Phase 1
                     (Full Spec Table 24) this currently covers.
 
+src/periop_api/     A demo REST API (FastAPI) over periop_core, so the
+                    core can actually be exercised over HTTP instead of
+                    only in unit tests. See its own "Scope honestly
+                    stated" docstring in __init__.py -- most importantly,
+                    it has one deliberate demo shortcut (a direct
+                    "add assertion" endpoint) that does not exist in the
+                    real system's design.
+
+frontend/           A small Vue 3 + Vite single-page demo UI over
+                    periop_api: start a session, add assertions, watch
+                    working facts / conflicts / gaps / closure update
+                    live. Built and exercised in a real browser
+                    (Playwright), not just built successfully.
+
 db/migrations/      PostgreSQL DDL for the canonical schema (Full Spec
                     Table 28), validated against a real Postgres 16
                     instance, not just hand-written.
 
-tests/              pytest suite for everything in src/periop_core.
+Dockerfile           Multi-stage build: compiles the Vue frontend, then
+                    packages it with periop_api into one Python runtime
+                    image (one container instead of a separate static
+                    site + API, to minimise Azure resources for the
+                    demo). NOTE: this sandbox has no Docker daemon, so
+                    `docker build` itself has not been run against this
+                    file. Its runtime logic (editable install + static
+                    file serving from a separate directory) *was*
+                    validated, by manually replicating the image's file
+                    layout in a plain venv and confirming both the API
+                    and the built frontend serve correctly from it --
+                    see the git history for that check. Run an actual
+                    `docker build .` (or `az acr build`, see below)
+                    before trusting the Dockerfile syntax itself.
+
+tests/              pytest suite for everything in src/periop_core and
+                    src/periop_api (including HTTP-level tests via
+                    FastAPI's TestClient against a real Postgres
+                    instance, not mocks).
 
 scripts/            Utility scripts (currently just the docs exporter).
 ```
@@ -71,7 +103,10 @@ gaps, reconciliation, safety gates, task ownership, audit.
 | Eligibility check | **Implemented** (`periop_core.eligibility`) — new in the v1.1 addendum, not in the original v1.0 spec. Age/obstetric/emergency-listing checks, hard-fails closed on unknown data. |
 | Session service | **Minimal implementation** (`periop_core.services.session_service`) — session creation gated on eligibility, activation gated on the addendum's INV-017 (AI-role notice acknowledgement). |
 | Audit/provenance trail | **Not implemented.** `provenance_json`/`Provenance` fields exist in the schema and models, but there's no append-only audit event log or replay capability yet (SVC-014, INV-008). |
-| LLM extraction/language, conversation orchestrator, InterviewAction selection, validator stack, FHIR adapter, API/event layer | **Not implemented** — these are Phase 2/3 per Table 24 and were deliberately left out of this pass rather than stubbed with empty classes that would misrepresent progress. |
+| Persistence (`periop_core.db`) | **Implemented** for everything above — Session, Assertion, WorkingFact/Conflict (recomputed each reconciliation pass, not versioned), RequirementState/InformationGap (same), Task, PatientAgendaItem. Round-trip tested against real Postgres. Concurrency control (NFR-003) is **not implemented** -- see the module docstring. |
+| Demo API (`periop_api`) | **Implemented**: create session (with eligibility gate), acknowledge AI notice, activate, add assertion (demo shortcut), get summary, attempt closure, list concepts. HTTP-level tested (FastAPI TestClient + real Postgres), not just unit tested. **Not implemented**: the real Table 17 API surface (Turn submission through the orchestrator, FHIR projection/commit endpoints), auth, and the audit/event trail. |
+| Demo frontend | **Implemented**: a single Vue page exercising the full demo flow, including the eligibility-rejection path and a live safety-critical-conflict scenario. Confirmed working in an actual headless-Chromium run, not just `npm run build` succeeding. |
+| LLM extraction/language, conversation orchestrator, InterviewAction selection, validator stack, FHIR adapter, real event architecture | **Not implemented** — these are Phase 2/3 per Table 24 and were deliberately left out rather than stubbed with empty classes that would misrepresent progress. |
 
 ## Running the tests
 
@@ -80,13 +115,48 @@ pip install -e .
 python3 -m pytest -q
 ```
 
-29 tests currently pass, covering the invariants above and the
-reconciliation/gap-engine/closure/eligibility scenarios modelled on
-`docs/exports/reconciliation_test_cases.csv`. Where a test pins down a
-*documented current limitation* (e.g. the engine not yet resolving a
-stale-vs-current conflict via freshness), its docstring says so — it is
-not asserting that behaviour is correct, only that it's what the code
-does right now.
+37 tests currently pass: the model/reconciliation/gap-engine/closure/
+eligibility unit tests, DB round-trip tests (skipped automatically if no
+local Postgres is reachable), and HTTP-level API tests. Where a test pins
+down a *documented current limitation* (e.g. the engine not yet resolving
+a stale-vs-current conflict via freshness, or a single-source assertion
+staying UNVERIFIED rather than auto-confirming), its docstring says so —
+it is not asserting that behaviour is correct, only that it's what the
+code does right now.
+
+## Running the demo locally
+
+```
+# 1. Postgres (adjust to however you run Postgres locally)
+createdb periop_core
+psql -d periop_core -f db/migrations/0001_init.sql
+
+# 2. Backend
+pip install -e .
+PERIOP_DATABASE_URL="dbname=periop_core" python3 -m periop_api.main
+# -> http://localhost:8000 (OpenAPI docs at /docs)
+
+# 3. Frontend (separate terminal)
+cd frontend
+npm install
+npm run dev
+# -> http://localhost:5173, proxies /api to the backend above
+```
+
+## Running the demo as one container
+
+```
+docker build -t periop-demo .
+docker run -p 8000:8000 -e PERIOP_DATABASE_URL="postgresql://user:pass@host/periop_core" periop-demo
+# -> http://localhost:8000 serves both the API and the built frontend
+```
+
+As noted above, this exact `docker build` has not been run in this
+environment (no Docker daemon available) — its runtime logic was
+validated by simulation, not the Dockerfile syntax itself. Run it once
+before relying on it, including for the Azure deployment path (`az acr
+build` builds it remotely and doesn't need local Docker either, if that's
+easier).
 
 ## Regenerating the doc exports
 

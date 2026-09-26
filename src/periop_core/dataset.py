@@ -50,3 +50,30 @@ def load_requirements(csv_path: pathlib.Path = DEFAULT_DATASET_CSV) -> dict[str,
 def default_requirements() -> dict[str, Requirement]:
     """Cached load of the default (repo-bundled) Clinical Dataset export."""
     return load_requirements()
+
+
+def load_concept_labels(csv_path: pathlib.Path = DEFAULT_DATASET_CSV) -> dict[str, dict[str, str]]:
+    """Return {Concept_ID: {"domain":..., "concept":..., "patient_question":...}}.
+
+    Display metadata only -- not part of the canonical Requirement object
+    (periop_core.models.Requirement), which stays limited to what the gap
+    engine actually needs. This exists for API/UI concept pickers.
+    """
+    labels: dict[str, dict[str, str]] = {}
+    with csv_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            concept_id = row["Concept_ID"].strip()
+            if not concept_id:
+                continue
+            labels[concept_id] = {
+                "domain": row["Domain"].strip(),
+                "concept": row["Concept"].strip(),
+                "patient_question": row["Patient_question"].strip(),
+            }
+    return labels
+
+
+@lru_cache(maxsize=1)
+def default_concept_labels() -> dict[str, dict[str, str]]:
+    return load_concept_labels()
