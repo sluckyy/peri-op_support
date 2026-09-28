@@ -64,6 +64,12 @@ class AddAssertionRequest(BaseModel):
     certainty: Certainty = Certainty.EXPLICIT
     source_type: str  # e.g. "PATIENT", "EMR", "PROXY"
     speaker: Speaker = Speaker.PATIENT
+    # Demo-only: lets the form backdate an assertion to exercise
+    # reconciliation's freshness assessment (step 3). The real system
+    # would derive this from Assertion.event_time / the actual conversation
+    # turn timestamp, never a client-supplied field -- see periop_api's
+    # module docstring on demo shortcuts.
+    assertion_time: datetime | None = None
 
 
 class GapWithLabel(BaseModel):

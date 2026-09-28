@@ -16,6 +16,7 @@ const form = reactive({
   assertion_state: 'AFFIRMED',
   source_type: 'PATIENT',
   speaker: 'PATIENT',
+  assertion_date: '',
 })
 
 onMounted(async () => {
@@ -50,6 +51,7 @@ async function submit() {
       assertion_state: form.assertion_state,
       source_type: form.source_type,
       speaker: form.speaker,
+      assertion_time: form.assertion_date ? new Date(form.assertion_date).toISOString() : null,
     })
     emit('added', summary)
     form.value = ''
@@ -113,6 +115,10 @@ async function submit() {
           <option value="CLINICIAN">CLINICIAN</option>
           <option value="SYSTEM">SYSTEM</option>
         </select>
+      </label>
+      <label>
+        Assertion date (optional -- backdate to test staleness)
+        <input v-model="form.assertion_date" type="date" />
       </label>
 
       <button :disabled="busy || !form.concept_code" @click="submit">Add assertion</button>

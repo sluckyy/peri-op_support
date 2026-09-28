@@ -150,7 +150,7 @@ def add_assertion_endpoint(
     labels = default_concept_labels()
     concept_label = labels.get(body.concept_code, {}).get("concept", body.concept_code)
 
-    assertion = Assertion(
+    assertion_kwargs = dict(
         session_id=session_id,
         subject_ref=session.subject_ref,
         concept=ConceptReference(
@@ -162,6 +162,10 @@ def add_assertion_endpoint(
         certainty=body.certainty,
         provenance={"entered_via": "demo API -- see periop_api/__init__.py"},
     )
+    if body.assertion_time is not None:
+        # Demo-only backdating -- see AddAssertionRequest.assertion_time.
+        assertion_kwargs["assertion_time"] = body.assertion_time
+    assertion = Assertion(**assertion_kwargs)
     db.insert_assertion(conn, assertion)
 
     return _recompute_and_summarise(conn, session_id)
