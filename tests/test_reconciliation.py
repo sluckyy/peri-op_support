@@ -1,23 +1,26 @@
 """Exercises periop_core.reconciliation against scenarios modelled on
 docs/exports/reconciliation_test_cases.csv (REC-T001, REC-T005-style).
 
-Scope note: as documented in reconciliation.py, this implementation does
-not yet perform freshness assessment (step 3) or fitness-based tie-
-breaking (step 4 proper). The REC-T005 (stale-vs-current smoking status)
-test below asserts the CURRENT, honestly-limited behaviour -- it reports a
-conflict rather than correctly resolving to "current ex-smoker" the way
-the full algorithm should. That gap is intentional and tracked, not a bug
-this test is hiding.
+Scope note: as documented in reconciliation.py, this implementation now
+performs freshness assessment (step 3, see the tests below) but not
+fitness-based tie-breaking (step 4 proper) or auto-resolution (step 7).
+The REC-T005 (stale-vs-current smoking status) test below asserts the
+CURRENT, honestly-limited behaviour -- it's a *disagreement* between an
+old and a new assertion, which step 3 deliberately does not touch (that's
+step 7's job); it reports a conflict rather than correctly resolving to
+"current ex-smoker" the way the full algorithm should. That gap is
+intentional and tracked, not a bug this test is hiding.
 """
 import uuid
+from datetime import datetime, timedelta
 
 from periop_core.enums import AssertionState, Certainty, Materiality, Speaker, VerificationState
 from periop_core.models import Assertion, ConceptReference, SourceReference
 from periop_core.reconciliation import reconcile
 
 
-def _assertion(session_id, concept_code, state, value, source_type, speaker):
-    return Assertion(
+def _assertion(session_id, concept_code, state, value, source_type, speaker, assertion_time=None):
+    kwargs = dict(
         session_id=session_id,
         subject_ref="pt-1",
         concept=ConceptReference(original_text=concept_code, code=concept_code),
@@ -27,6 +30,9 @@ def _assertion(session_id, concept_code, state, value, source_type, speaker):
         certainty=Certainty.EXPLICIT,
         provenance={"note": "test"},
     )
+    if assertion_time is not None:
+        kwargs["assertion_time"] = assertion_time
+    return Assertion(**kwargs)
 
 
 def test_agreeing_assertions_produce_single_confirmed_working_fact():
@@ -95,6 +101,57 @@ def test_rec_t005_style_stale_vs_current_smoking_reports_as_conflict_not_resolve
     assert len(conflicts) == 1
     assert conflicts[0].materiality == Materiality.MODERATE  # not in the critical-prefix list
     assert facts[0].verification_state == VerificationState.CONFLICTED
+
+
+def test_old_agreeing_assertion_is_marked_stale_not_left_unconfirmed_forever():
+    """Step 3 (assess freshness): a single-source (or agreeing) fact that
+    hasn't been reasserted in a long time must not silently look the same
+    as one confirmed a minute ago -- that's the whole point of the
+    'stale data cannot silently satisfy a current-data requirement'
+    safety invariant."""
+    session_id = uuid.uuid4()
+    now = datetime(2026, 1, 1)
+    old_assertion = _assertion(
+        session_id, "CUR-002", AssertionState.AFFIRMED, "no recent change", "PATIENT",
+        Speaker.PATIENT, assertion_time=now - timedelta(days=400),
+    )
+
+    facts, conflicts = reconcile([old_assertion], now=now)
+
+    assert conflicts == []
+    assert facts[0].verification_state == VerificationState.STALE
+    assert facts[0].freshness["classification"] == "STALE"
+
+
+def test_recent_agreeing_assertion_is_not_stale():
+    session_id = uuid.uuid4()
+    now = datetime(2026, 1, 1)
+    recent = _assertion(
+        session_id, "CUR-002", AssertionState.AFFIRMED, "no recent change", "PATIENT",
+        Speaker.PATIENT, assertion_time=now - timedelta(days=5),
+    )
+
+    facts, conflicts = reconcile([recent], now=now)
+
+    assert facts[0].verification_state == VerificationState.UNCONFIRMED
+    assert facts[0].freshness["classification"] == "CURRENT"
+
+
+def test_evergreen_domain_is_never_marked_stale_even_when_very_old():
+    """Allergy (and family history / identity) are 'longitudinal' per the
+    Source Authority Matrix -- an old confirmed penicillin allergy is not
+    a data-quality problem the way an old vitals reading would be."""
+    session_id = uuid.uuid4()
+    now = datetime(2026, 1, 1)
+    old_allergy = _assertion(
+        session_id, "ALL-003", AssertionState.AFFIRMED, "penicillin", "PATIENT",
+        Speaker.PATIENT, assertion_time=now - timedelta(days=3650),
+    )
+
+    facts, conflicts = reconcile([old_allergy], now=now)
+
+    assert facts[0].verification_state == VerificationState.UNCONFIRMED
+    assert facts[0].freshness["classification"] == "EXEMPT"
 
 
 def test_no_assertion_is_ever_dropped():

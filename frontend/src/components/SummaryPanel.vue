@@ -156,6 +156,10 @@ td {
   background: #fde0e0;
   color: #9a1c1c;
 }
+.state-stale {
+  background: #e6e6e6;
+  color: #555;
+}
 .materiality-critical,
 .materiality-high {
   background: #fde0e0;

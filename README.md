@@ -109,7 +109,7 @@ gaps, reconciliation, safety gates, task ownership, audit.
 | PostgreSQL schema | **Implemented** (`db/migrations/0001_init.sql`) and validated by actually running it against Postgres 16, including exercising the `assertion_provenance_not_empty` CHECK constraint. Cross-object invariants (e.g. INV-003 properly) are *not* enforced at the DB layer — see the comment in the migration file — only in the Python model layer, which is the intended access path (INV-013). |
 | Clinical Dataset loader | **Implemented** (`periop_core.dataset`) — loads all 343 concepts from the CSV export with their `Requirement_class`. |
 | Source Authority Matrix loader | **Implemented** (`periop_core.source_authority`) — loads the matrix; exposes a conservative auto-resolution flag. Not yet wired into reconciliation's tie-breaking (see below). |
-| Reconciliation engine | **Partially implemented** (`periop_core.reconciliation`). Groups assertions by concept, builds a WorkingFact when they agree, and raises a classified Conflict (never dropping an assertion) when they disagree. **Not implemented**: freshness assessment (step 3), fitness-based tie-breaking using the Source Authority Matrix (step 4 proper — the matrix loads but isn't used to auto-resolve yet), conversational clarification / collateral retrieval / human verification (steps 8-10), and FHIR projection (step 12). `reconciliation.py`'s docstring states this scope directly. |
+| Reconciliation engine | **Partially implemented** (`periop_core.reconciliation`). Groups assertions by concept, builds a WorkingFact when they agree, and raises a classified Conflict (never dropping an assertion) when they disagree. Freshness assessment (step 3) is now real for the *agreeing* case: an old, unreasserted fact is marked `STALE` (feeding an information-state/gap-type path that was already built but previously unreachable) rather than staying `UNCONFIRMED` forever — using a single conservative default threshold (180 days) rather than the spec's per-datatype rule, with allergy/family-history/identity concepts exempted as the matrix itself describes them as longitudinal. **Not implemented**: a real per-datatype freshness/fitness mapping (needs a concept-to-Source-Authority-Matrix-datatype classification that doesn't exist yet), fitness-based tie-breaking (step 4 proper — the matrix loads but isn't used to auto-resolve), any auto-resolution of a *disagreement* between an old and new assertion (step 7 — see REC-T005 in `test_reconciliation.py`, deliberately still conservative), conversational clarification / collateral retrieval / human verification (steps 8-10), and FHIR projection (step 12). `reconciliation.py`'s docstring states this scope directly. |
 | Gap engine | **Partially implemented** (`periop_core.gap_engine`). Computes RequirementState from WorkingFacts and produces prioritised InformationGaps, respecting INV-005 (12-state taxonomy, no collapsing) and INV-006 (no gap from a NOT_APPLICABLE requirement). **Not implemented**: parsing the dataset's free-text `Trigger` column into actual conditional-activation logic — every non-M0 requirement is currently treated as always-active, which is a documented simplification, not a hidden shortcut. |
 | Safety / closure gate | **Partially implemented** (`periop_core.safety`). Implements the closure-gate decision (COMPLETE / COMPLETE_WITH_OPEN_ACTIONS / BLOCKED) per INV-010/014. **Not implemented**: red-flag rule *evaluation* (the dataset's `Red_flag_rule` column is prose, not yet a structured predicate), the escalation classes (ESC-001..012), and the safety-interrupt policy hierarchy (§7.1) — these need the conversation orchestrator, which is Phase 2. |
 | Eligibility check | **Implemented** (`periop_core.eligibility`) — new in the v1.1 addendum, not in the original v1.0 spec. Age/obstetric/emergency-listing checks, hard-fails closed on unknown data. |
@@ -172,12 +172,13 @@ pip install -e .
 python3 -m pytest -q
 ```
 
-121 tests currently pass: the model/reconciliation/gap-engine/closure/
+126 tests currently pass: the model/reconciliation/gap-engine/closure/
 eligibility unit tests, DB round-trip tests (skipped automatically if no
 local Postgres is reachable), HTTP-level API tests for both the Phase 1
-core and the v1.1 Model Layer endpoints, and the Model Layer unit tests
+core and the v1.1 Model Layer endpoints, the Model Layer unit tests
 (epistemic ladder, attention scoring, causal ECD/entropy, psychological
-safety, humour policy, correction propagation). Where a test pins down a
+safety, humour policy, correction propagation), and reconciliation's
+freshness-assessment tests. Where a test pins down a
 *documented current limitation* (e.g. the engine not yet resolving a
 stale-vs-current conflict via freshness, or a single-source assertion
 staying UNVERIFIED rather than auto-confirming), its docstring says so —
