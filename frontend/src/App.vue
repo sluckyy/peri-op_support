@@ -5,18 +5,22 @@ import AssertionForm from './components/AssertionForm.vue'
 import SummaryPanel from './components/SummaryPanel.vue'
 import ModelLayerPanel from './components/ModelLayerPanel.vue'
 import CausalEcdCalculator from './components/CausalEcdCalculator.vue'
+import AuditTrailPanel from './components/AuditTrailPanel.vue'
 import { api } from './api.js'
 
 const session = ref(null)
 const summary = ref(null)
+const auditPanel = ref(null)
 
 async function onSessionReady(activatedSession) {
   session.value = activatedSession
   summary.value = await api.getSummary(activatedSession.session_id)
+  auditPanel.value?.load()
 }
 
 function onAssertionAdded(newSummary) {
   summary.value = newSummary
+  auditPanel.value?.load()
 }
 
 async function refreshSummary() {
@@ -25,6 +29,7 @@ async function refreshSummary() {
 
 function onClosed(newSummary) {
   summary.value = newSummary
+  auditPanel.value?.load()
 }
 </script>
 
@@ -56,6 +61,7 @@ function onClosed(newSummary) {
         :summary="summary"
         @refresh="refreshSummary"
       />
+      <AuditTrailPanel ref="auditPanel" :session-id="session.session_id" />
     </template>
 
     <CausalEcdCalculator />
