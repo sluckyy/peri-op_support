@@ -5,12 +5,22 @@ from periop_core.enums import (
     AgendaStatus,
     ConflictStatus,
     ConflictType,
+    ContradictionStatus,
     Materiality,
+    Speaker,
     TaskPriority,
     TaskStatus,
     TaskType,
 )
-from periop_core.models import Conflict, OpenTask, PatientAgendaItem
+from periop_core.models import (
+    ConceptReference,
+    Conflict,
+    ConflictResolution,
+    ConflictReview,
+    ConflictReviewSide,
+    OpenTask,
+    PatientAgendaItem,
+)
 from periop_core.safety import ClosureOutcome, evaluate_closure
 
 
@@ -83,3 +93,68 @@ def test_nothing_open_yields_complete():
     assert result.outcome == ClosureOutcome.COMPLETE
     assert result.blocking_reasons == []
     assert result.open_action_reasons == []
+
+
+def _review(concept_code, status, **overrides):
+    defaults = dict(
+        review_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        conflict_id=uuid.uuid4(),
+        concept=ConceptReference(original_text=concept_code, code=concept_code),
+        sides=[
+            ConflictReviewSide(
+                assertion_id=uuid.uuid4(),
+                source_type="PATIENT",
+                speaker=Speaker.PATIENT,
+                value="a",
+                original_text="a",
+                recorded_at="2024-01-01T00:00:00Z",
+            ),
+            ConflictReviewSide(
+                assertion_id=uuid.uuid4(),
+                source_type="EMR",
+                speaker=Speaker.CLINICIAN,
+                value="b",
+                original_text="b",
+                recorded_at="2024-01-01T00:00:00Z",
+            ),
+        ],
+        status=status,
+    )
+    defaults.update(overrides)
+    return ConflictReview(**defaults)
+
+
+def test_open_conflict_review_on_a_critical_concept_blocks_closure():
+    review = _review("ALL-003", ContradictionStatus.OPEN)
+    result = evaluate_closure(open_tasks=[], agenda_items=[], conflicts=[], conflict_reviews=[review])
+    assert result.outcome == ClosureOutcome.BLOCKED
+    assert any("conflict review" in r.lower() for r in result.blocking_reasons)
+
+
+def test_escalated_conflict_review_on_a_critical_concept_also_blocks_closure():
+    # Escalating isn't a form of resolving -- it still means nobody has
+    # decided which side is correct.
+    review = _review(
+        "MED-009",
+        ContradictionStatus.ESCALATED,
+        resolution=ConflictResolution(resolved_by="dr-jones", rationale="neither side is trustworthy"),
+    )
+    result = evaluate_closure(open_tasks=[], agenda_items=[], conflicts=[], conflict_reviews=[review])
+    assert result.outcome == ClosureOutcome.BLOCKED
+
+
+def test_reconciled_conflict_review_on_a_critical_concept_does_not_block():
+    review = _review(
+        "ALL-003",
+        ContradictionStatus.RECONCILED,
+        resolution=ConflictResolution(resolved_by="dr-smith", rationale="...", resolved_value="a"),
+    )
+    result = evaluate_closure(open_tasks=[], agenda_items=[], conflicts=[], conflict_reviews=[review])
+    assert result.outcome == ClosureOutcome.COMPLETE
+
+
+def test_open_conflict_review_on_a_non_critical_concept_only_downgrades():
+    review = _review("FUNC-003", ContradictionStatus.OPEN)
+    result = evaluate_closure(open_tasks=[], agenda_items=[], conflicts=[], conflict_reviews=[review])
+    assert result.outcome == ClosureOutcome.COMPLETE_WITH_OPEN_ACTIONS

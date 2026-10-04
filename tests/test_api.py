@@ -109,10 +109,33 @@ def test_full_happy_path_through_conflict_to_closure(client):
     summary = resp.json()
     assert len(summary["conflicts"]) == 1
     assert summary["conflicts"][0]["materiality"] == "CRITICAL"
-    assert summary["closure_preview"]["outcome"] == "COMPLETE_WITH_OPEN_ACTIONS"
+    # A plain Conflict on its own only downgrades closure, but ALL-003 is
+    # one of the identity/procedure/allergy/anaesthetic/medication
+    # prefixes (periop_core.reconciliation.CRITICAL_CONCEPT_PREFIXES), so
+    # the ConflictReview it auto-logged now blocks closure outright until
+    # a clinician actually resolves it -- logging a safety-critical
+    # disagreement isn't enough on its own if nobody acts on it.
+    assert summary["closure_preview"]["outcome"] == "BLOCKED"
+    review_id = summary["conflict_reviews"][0]["review_id"]
 
-    # A critical conflict downgrades closure but does not block it (only
-    # an unowned critical Task does, per INV-010) -- confirm close succeeds.
+    resp = client.post(f"/api/sessions/{session_id}/close")
+    assert resp.status_code == 409, resp.text
+    assert "conflict review" in resp.json()["detail"]["blocking_reasons"][0].lower()
+
+    resp = client.post(
+        f"/api/sessions/{session_id}/conflict-reviews/{review_id}/resolve",
+        json={
+            "status": "RECONCILED",
+            "resolved_by": "dr-smith",
+            "rationale": "EMR note is contemporaneous; patient recall is unreliable here",
+            "resolved_value": "throat swelling after penicillin",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Resolving the review unblocks closure, but the underlying Conflict
+    # itself is still OPEN (nothing here auto-resolves step 7) -- so it
+    # still downgrades to COMPLETE_WITH_OPEN_ACTIONS rather than COMPLETE.
     resp = client.post(f"/api/sessions/{session_id}/close")
     assert resp.status_code == 200, resp.text
     assert resp.json()["session"]["status"] == "COMPLETE"

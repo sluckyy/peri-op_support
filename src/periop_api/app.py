@@ -992,6 +992,7 @@ def _recompute_and_summarise(conn: psycopg.Connection, session_id: uuid.UUID) ->
         agenda_items=agenda_items,
         conflicts=conflicts,
         repair_requirements=repairs,
+        conflict_reviews=conflict_reviews,
     )
 
     return SessionSummary(
