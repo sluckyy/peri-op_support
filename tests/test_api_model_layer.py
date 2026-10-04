@@ -16,6 +16,15 @@ def client(db_conninfo, monkeypatch):
     from periop_api.app import app
 
     with TestClient(app) as c:
+        # Nearly every v1.1 Model Layer endpoint requires auth (see
+        # periop_core.auth) -- register+log in a throwaway staff
+        # account once per test and default every request on this
+        # client to carrying its token. tests/test_auth.py covers the
+        # unauthenticated-is-rejected path directly.
+        username = f"test-staff-{uuid.uuid4().hex[:12]}"
+        c.post("/api/auth/register", json={"username": username, "password": "test-password-1"})
+        login = c.post("/api/auth/login", json={"username": username, "password": "test-password-1"})
+        c.headers["Authorization"] = f"Bearer {login.json()['token']}"
         yield c
 
 

@@ -5,12 +5,13 @@ import pathlib
 import uuid
 
 import psycopg
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from periop_core import audit_db, conflict_review_db, db, model_layer_db
+from periop_core import audit_db, auth_db, conflict_review_db, db, model_layer_db
 from periop_core.attention import AttentionCandidate, AttentionFactors, select_working_set
+from periop_core.auth import User, hash_password, new_session, verify_password
 from periop_core.causal_reasoning import entropy, expected_clinical_discrimination
 from periop_core.dataset import default_concept_labels, default_requirements
 from periop_core.eligibility import EligibilityContext, evaluate_eligibility
@@ -56,6 +57,7 @@ from periop_core.safety import evaluate_closure
 from periop_api.deps import get_conn, get_demo_manifest
 from periop_api.schemas import (
     AddAssertionRequest,
+    AssertionRecordedResponse,
     AttentionCandidateResult,
     AttentionWorkingSetRequest,
     AttentionWorkingSetResponse,
@@ -75,12 +77,16 @@ from periop_api.schemas import (
     GapWithLabel,
     HumourCheckRequest,
     HumourCheckResponse,
+    LoginRequest,
+    LoginResponse,
     PromoteHypothesisRequest,
     PromoteHypothesisResponse,
     PsychologicalSafetySignalRequest,
+    RegisterRequest,
     ResolveConflictReviewRequest,
     SessionSummary,
     UpdateCausalHypothesisStatusRequest,
+    UserPublic,
 )
 
 app = FastAPI(
@@ -101,6 +107,75 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def require_auth(
+    authorization: str | None = Header(default=None),
+    conn: psycopg.Connection = Depends(get_conn),
+) -> User:
+    """Gates every endpoint that views session data or takes a clinical/
+    Model-Layer action -- see periop_core.auth's module docstring for
+    the access-boundary rationale and README for which endpoints this
+    is and isn't applied to. Expects `Authorization: Bearer <token>`;
+    an invalid, missing or expired token is 401, deliberately with no
+    distinction in the error message (never reveal *why* a token
+    failed to an unauthenticated caller)."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
+    token = authorization.removeprefix("Bearer ").strip()
+    session = auth_db.get_session(conn, token)
+    if session is None or session.is_expired():
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    user = auth_db.get_user_by_id(conn, session.user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return user
+
+
+def _user_public(user: User) -> UserPublic:
+    return UserPublic(user_id=user.user_id, username=user.username, created_at=user.created_at)
+
+
+@app.post("/api/auth/register", response_model=UserPublic, status_code=201)
+def register_endpoint(body: RegisterRequest, conn: psycopg.Connection = Depends(get_conn)):
+    """Staff/clinician account creation -- see periop_core.auth. Demo
+    scope: open registration, no email verification or invite flow (a
+    real deployment would gate this behind an admin/invite step rather
+    than letting anyone create an account)."""
+    if auth_db.get_user_by_username(conn, body.username) is not None:
+        raise HTTPException(status_code=409, detail=f"Username {body.username!r} is already taken")
+    try:
+        password_hash = hash_password(body.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    user = User(username=body.username, password_hash=password_hash)
+    auth_db.insert_user(conn, user)
+    return _user_public(user)
+
+
+@app.post("/api/auth/login", response_model=LoginResponse)
+def login_endpoint(body: LoginRequest, conn: psycopg.Connection = Depends(get_conn)):
+    user = auth_db.get_user_by_username(conn, body.username)
+    # Same generic failure whether the username doesn't exist or the
+    # password is wrong -- never let a caller enumerate valid usernames.
+    if user is None or not verify_password(body.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    session = new_session(user.user_id)
+    auth_db.insert_session(conn, session)
+    return LoginResponse(token=session.token, user=_user_public(user), expires_at=session.expires_at)
+
+
+@app.post("/api/auth/logout", status_code=204)
+def logout_endpoint(
+    current_user: User = Depends(require_auth),
+    authorization: str = Header(),
+    conn: psycopg.Connection = Depends(get_conn),
+):
+    # require_auth already validated this header; re-parsing it here
+    # just recovers the raw token to delete (it returns the User, not
+    # the token itself).
+    token = authorization.removeprefix("Bearer ").strip()
+    auth_db.delete_session(conn, token)
 
 
 @app.get("/api/concepts", response_model=list[ConceptOption])
@@ -204,12 +279,18 @@ def activate_session_endpoint(session_id: uuid.UUID, conn: psycopg.Connection = 
     return session
 
 
-@app.post("/api/sessions/{session_id}/assertions", response_model=SessionSummary)
+@app.post("/api/sessions/{session_id}/assertions", response_model=AssertionRecordedResponse)
 def add_assertion_endpoint(
     session_id: uuid.UUID,
     body: AddAssertionRequest,
     conn: psycopg.Connection = Depends(get_conn),
 ):
+    """Patient-facing and deliberately unauthenticated (see
+    periop_core.auth) -- but that means its response must never leak
+    the clinical summary (gaps, conflicts, Model Layer state) the way
+    it used to. Still recomputes and persists that state internally
+    (so it's ready the moment staff log in and look), just doesn't
+    return it here. See AssertionRecordedResponse's docstring."""
     session = _get_session_or_404(conn, session_id)
     labels = default_concept_labels()
     concept_label = labels.get(body.concept_code, {}).get("concept", body.concept_code)
@@ -247,17 +328,26 @@ def add_assertion_endpoint(
         ),
     )
 
-    return _recompute_and_summarise(conn, session_id)
+    _recompute_and_summarise(conn, session_id)
+    return AssertionRecordedResponse(session_id=session_id, assertion_id=assertion.assertion_id)
 
 
 @app.get("/api/sessions/{session_id}/summary", response_model=SessionSummary)
-def get_summary_endpoint(session_id: uuid.UUID, conn: psycopg.Connection = Depends(get_conn)):
+def get_summary_endpoint(
+    session_id: uuid.UUID,
+    conn: psycopg.Connection = Depends(get_conn),
+    current_user: User = Depends(require_auth),
+):
     _get_session_or_404(conn, session_id)
     return _recompute_and_summarise(conn, session_id)
 
 
 @app.post("/api/sessions/{session_id}/close", response_model=SessionSummary)
-def close_session_endpoint(session_id: uuid.UUID, conn: psycopg.Connection = Depends(get_conn)):
+def close_session_endpoint(
+    session_id: uuid.UUID,
+    conn: psycopg.Connection = Depends(get_conn),
+    current_user: User = Depends(require_auth),
+):
     session = _get_session_or_404(conn, session_id)
     summary = _recompute_and_summarise(conn, session_id)
 
@@ -287,7 +377,11 @@ def close_session_endpoint(session_id: uuid.UUID, conn: psycopg.Connection = Dep
 
 
 @app.get("/api/sessions/{session_id}/audit", response_model=list[AuditEvent])
-def get_audit_lineage_endpoint(session_id: uuid.UUID, conn: psycopg.Connection = Depends(get_conn)):
+def get_audit_lineage_endpoint(
+    session_id: uuid.UUID,
+    conn: psycopg.Connection = Depends(get_conn),
+    current_user: User = Depends(require_auth),
+):
     """SVC-014's `getLineage`. Covers the Phase 1 core lifecycle plus the
     v1.1 Model Layer mutations listed in periop_core.enums.AuditEventType
     -- see README."""
@@ -304,6 +398,7 @@ def resolve_conflict_review_endpoint(
     review_id: uuid.UUID,
     body: ResolveConflictReviewRequest,
     conn: psycopg.Connection = Depends(get_conn),
+    current_user: User = Depends(require_auth),
 ):
     """A ConflictReview is logged automatically (see
     _log_new_conflict_reviews) the first time reconciliation detects a
@@ -313,7 +408,9 @@ def resolve_conflict_review_endpoint(
     is trusted as-is, but who escalated it and why are still required.
     Both are enforced by ConflictReview's own validator, not a
     hand-written check here -- a status transition without a recorded
-    decision fails with 422."""
+    decision fails with 422. `resolved_by` is the authenticated
+    caller's username, never client-supplied (see
+    ResolveConflictReviewRequest's docstring)."""
     _get_session_or_404(conn, session_id)
     if body.status not in (ContradictionStatus.RECONCILED, ContradictionStatus.ESCALATED):
         raise HTTPException(
@@ -337,7 +434,7 @@ def resolve_conflict_review_endpoint(
                 **review.model_dump(),
                 "status": body.status,
                 "resolution": {
-                    "resolved_by": body.resolved_by,
+                    "resolved_by": current_user.username,
                     "rationale": body.rationale,
                     "resolved_value": body.resolved_value,
                 },
@@ -354,7 +451,7 @@ def resolve_conflict_review_endpoint(
             event_type=AuditEventType.CONFLICT_REVIEW_RESOLVED,
             entity_type="conflict_review",
             entity_id=review_id,
-            payload={"status": updated.status.value, "resolved_by": body.resolved_by},
+            payload={"status": updated.status.value, "resolved_by": current_user.username},
         ),
     )
     return updated
@@ -365,6 +462,7 @@ def create_hypothesis_endpoint(
     session_id: uuid.UUID,
     body: CreateHypothesisRequest,
     conn: psycopg.Connection = Depends(get_conn),
+    current_user: User = Depends(require_auth),
 ):
     """v1.1 §6A -- a conversational hypothesis at L1/L2/L3, not yet
     clinically grounded. See periop_core.model_layer.ConversationalHypothesis."""
@@ -403,6 +501,7 @@ def promote_hypothesis_endpoint(
     hypothesis_id: uuid.UUID,
     body: PromoteHypothesisRequest,
     conn: psycopg.Connection = Depends(get_conn),
+    current_user: User = Depends(require_auth),
 ):
     """v1.1 §6A.3 -- enforces the epistemic ladder's promotion gates for
     real (periop_core.epistemic.can_promote): crossing into L4+ requires
@@ -449,6 +548,7 @@ def correct_proposition_endpoint(
     proposition_id: uuid.UUID,
     body: CorrectPropositionRequest,
     conn: psycopg.Connection = Depends(get_conn),
+    current_user: User = Depends(require_auth),
 ):
     """v1.1 §6A.4 ('a repaired fact must propagate through the assertion
     graph and invalidate stale downstream inference') / §6A.15 ('repair
@@ -528,6 +628,7 @@ def create_obligation_endpoint(
     session_id: uuid.UUID,
     body: CreateObligationRequest,
     conn: psycopg.Connection = Depends(get_conn),
+    current_user: User = Depends(require_auth),
 ):
     _get_session_or_404(conn, session_id)
     obligation = ProspectiveObligation(
@@ -558,6 +659,7 @@ def create_contradiction_endpoint(
     session_id: uuid.UUID,
     body: CreateContradictionRequest,
     conn: psycopg.Connection = Depends(get_conn),
+    current_user: User = Depends(require_auth),
 ):
     """Table 9 -- a conversation-level incompatibility, distinct from a
     Clinical State Conflict. **Not implemented**: promoting a
@@ -598,6 +700,7 @@ def create_uncertainty_endpoint(
     session_id: uuid.UUID,
     body: CreateUncertaintyRequest,
     conn: psycopg.Connection = Depends(get_conn),
+    current_user: User = Depends(require_auth),
 ):
     """Table 9 -- an explicit unresolved ambiguity/missing-value/
     uncertain interpretation, deliberately distinct from a negative
@@ -635,6 +738,7 @@ def create_causal_hypothesis_endpoint(
     session_id: uuid.UUID,
     body: CreateCausalHypothesisRequest,
     conn: psycopg.Connection = Depends(get_conn),
+    current_user: User = Depends(require_auth),
 ):
     """Table 9 / 6A.10 -- a provisional cause-effect explanation. Kept
     distinct from the standalone causal-ECD calculator
@@ -676,6 +780,7 @@ def update_causal_hypothesis_status_endpoint(
     causal_id: uuid.UUID,
     body: UpdateCausalHypothesisStatusRequest,
     conn: psycopg.Connection = Depends(get_conn),
+    current_user: User = Depends(require_auth),
 ):
     """6A.10 -- moves a CausalHypothesis along CausalRelationStatus (e.g.
     DISCRIMINATED once a discriminating question has been asked, or
@@ -720,6 +825,7 @@ def create_repair_endpoint(
     session_id: uuid.UUID,
     body: CreateRepairRequest,
     conn: psycopg.Connection = Depends(get_conn),
+    current_user: User = Depends(require_auth),
 ):
     """v1.1 §6A.15 -- 'repair is mandatory when material misunderstanding
     is detected' and 'deferral creates an obligation when the issue
@@ -774,7 +880,10 @@ def create_repair_endpoint(
 
 @app.post("/api/sessions/{session_id}/repairs/{repair_id}/resolve", response_model=RepairRequirement)
 def resolve_repair_endpoint(
-    session_id: uuid.UUID, repair_id: uuid.UUID, conn: psycopg.Connection = Depends(get_conn)
+    session_id: uuid.UUID,
+    repair_id: uuid.UUID,
+    conn: psycopg.Connection = Depends(get_conn),
+    current_user: User = Depends(require_auth),
 ):
     _get_session_or_404(conn, session_id)
     try:
@@ -805,6 +914,7 @@ def apply_psychological_safety_signal_endpoint(
     session_id: uuid.UUID,
     body: PsychologicalSafetySignalRequest,
     conn: psycopg.Connection = Depends(get_conn),
+    current_user: User = Depends(require_auth),
 ):
     """v1.1 §6A.7. See periop_core.psychological_safety's module
     docstring before treating the result as anything more than a bounded,
