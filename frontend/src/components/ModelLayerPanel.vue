@@ -67,6 +67,38 @@ function promote(hypId) {
   })
 }
 
+// ------------------------------------------------------- proposition correction
+
+const correctForms = reactive({}) // proposition_id -> { content, grounding_evidence }
+const lastCorrection = ref(null) // { dependentsFound, repairMateriality } for the most recent correction
+
+function correctForm(propId) {
+  if (!correctForms[propId]) {
+    correctForms[propId] = { content: '', grounding_evidence: '' }
+  }
+  return correctForms[propId]
+}
+
+function correctProposition(propId) {
+  guarded(async () => {
+    const form = correctForm(propId)
+    if (!form.content) return
+    const evidence = form.grounding_evidence
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    const result = await api.correctProposition(props.sessionId, propId, {
+      content: form.content,
+      grounding_evidence: evidence,
+    })
+    lastCorrection.value = {
+      dependentsFound: result.dependents_found,
+      repairMateriality: result.repair.materiality,
+    }
+    delete correctForms[propId]
+  })
+}
+
 // -------------------------------------------------------------------- repairs
 
 const repairForm = reactive({
@@ -203,13 +235,42 @@ function checkHumour() {
     </ul>
 
     <h3>Grounded propositions ({{ summary.propositions.length }})</h3>
+    <p class="hint">
+      Correcting a proposition never silently edits it: the original is
+      marked superseded by the replacement, and anything that cited it
+      as evidence (by exact reference, see periop_core.model_layer_gate)
+      gets a mandatory repair logged automatically &mdash; HIGH
+      materiality if something depended on it, LOW if nothing did.
+    </p>
     <ul class="stack">
       <li v-for="p in summary.propositions" :key="p.proposition_id" class="entry">
-        <span class="pill hstatus-promoted">{{ p.epistemic_level.split('_')[0] }}</span>
-        {{ p.content }}
+        <div class="entry-head">
+          <span class="pill" :class="p.superseded_by ? 'hstatus-superseded' : 'hstatus-promoted'">
+            {{ p.superseded_by ? 'SUPERSEDED' : p.epistemic_level.split('_')[0] }}
+          </span>
+          <span>{{ p.content }}</span>
+        </div>
         <span class="hint">&mdash; {{ p.grounding_evidence.join('; ') }}</span>
+        <div v-if="!p.superseded_by" class="promote-form">
+          <input v-model="correctForm(p.proposition_id).content" placeholder="corrected content" />
+          <textarea
+            v-model="correctForm(p.proposition_id).grounding_evidence"
+            rows="2"
+            placeholder="new grounding evidence, one per line"
+          ></textarea>
+          <button
+            :disabled="busy || !correctForm(p.proposition_id).content"
+            @click="correctProposition(p.proposition_id)"
+          >
+            Correct
+          </button>
+        </div>
       </li>
     </ul>
+    <p v-if="lastCorrection" class="hint">
+      Last correction: {{ lastCorrection.dependentsFound }} dependent(s) found
+      &mdash; logged a {{ lastCorrection.repairMateriality }} materiality repair below.
+    </p>
 
     <h3>Repair requirements</h3>
     <p class="hint">
@@ -376,6 +437,10 @@ function checkHumour() {
 .hstatus-promoted {
   background: #d1f7d6;
   color: #196a2b;
+}
+.hstatus-superseded {
+  background: var(--border);
+  color: #666;
 }
 .materiality-critical,
 .materiality-high {

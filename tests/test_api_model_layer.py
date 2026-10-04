@@ -1,5 +1,7 @@
 """End-to-end HTTP tests for the v1.1 Model Layer demo endpoints, against
 a real Postgres instance (see conftest.py)."""
+import uuid
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -83,6 +85,96 @@ def test_promotion_requires_grounding_and_succeeds_with_it(client):
     summary = client.get(f"/api/sessions/{session_id}/summary").json()
     assert len(summary["propositions"]) == 1
     assert summary["hypotheses"][0]["status"] == "PROMOTED"
+
+
+def _grounded_proposition(client, session_id, content="patient reports NKDA"):
+    hyp = client.post(
+        f"/api/sessions/{session_id}/hypotheses",
+        json={"content": content},
+    ).json()
+    resp = client.post(
+        f"/api/sessions/{session_id}/hypotheses/{hyp['hypothesis_id']}/promote",
+        json={
+            "target_level": "L4_PATIENT_GROUNDED",
+            "grounding_evidence": ["patient stated this directly"],
+        },
+    )
+    return resp.json()["proposition"]
+
+
+def test_correcting_a_proposition_with_no_dependents_logs_a_low_materiality_repair(client):
+    session_id = _active_session(client)
+    proposition = _grounded_proposition(client, session_id)
+
+    resp = client.post(
+        f"/api/sessions/{session_id}/propositions/{proposition['proposition_id']}/correct",
+        json={
+            "content": "patient corrects: NKDA was wrong, confirmed penicillin allergy",
+            "grounding_evidence": ["patient corrected themselves on direct questioning"],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["original"]["superseded_by"] == body["replacement"]["proposition_id"]
+    assert body["dependents_found"] == 0
+    assert body["repair"]["materiality"] == "LOW"
+    assert body["repair"]["status"] == "OPEN"
+
+    summary = client.get(f"/api/sessions/{session_id}/summary").json()
+    assert len(summary["propositions"]) == 2
+    assert any(r["repair_id"] == body["repair"]["repair_id"] for r in summary["repairs"])
+
+
+def test_correcting_a_proposition_with_a_dependent_hypothesis_logs_a_high_materiality_repair(client):
+    session_id = _active_session(client)
+    proposition = _grounded_proposition(client, session_id)
+
+    # A later hypothesis cites the (soon-to-be-corrected) proposition as
+    # supporting evidence -- this is the correction-propagation case.
+    client.post(
+        f"/api/sessions/{session_id}/hypotheses",
+        json={
+            "content": "possible cross-reactivity with cephalosporins",
+            "supporting_observations": [f"proposition:{proposition['proposition_id']}"],
+        },
+    )
+
+    resp = client.post(
+        f"/api/sessions/{session_id}/propositions/{proposition['proposition_id']}/correct",
+        json={
+            "content": "correction: NKDA was wrong",
+            "grounding_evidence": ["patient corrected themselves"],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["dependents_found"] == 1
+    assert body["repair"]["materiality"] == "HIGH"
+
+
+def test_correcting_an_already_superseded_proposition_returns_409(client):
+    session_id = _active_session(client)
+    proposition = _grounded_proposition(client, session_id)
+    first = client.post(
+        f"/api/sessions/{session_id}/propositions/{proposition['proposition_id']}/correct",
+        json={"content": "first correction", "grounding_evidence": ["evidence"]},
+    )
+    assert first.status_code == 200, first.text
+
+    second = client.post(
+        f"/api/sessions/{session_id}/propositions/{proposition['proposition_id']}/correct",
+        json={"content": "second correction", "grounding_evidence": ["evidence"]},
+    )
+    assert second.status_code == 409
+
+
+def test_correcting_an_unknown_proposition_returns_404(client):
+    session_id = _active_session(client)
+    resp = client.post(
+        f"/api/sessions/{session_id}/propositions/{uuid.uuid4()}/correct",
+        json={"content": "x", "grounding_evidence": ["y"]},
+    )
+    assert resp.status_code == 404
 
 
 def test_repair_deferral_without_obligation_returns_422(client):
