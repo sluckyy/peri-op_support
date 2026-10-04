@@ -78,6 +78,20 @@ class AddAssertionRequest(BaseModel):
     assertion_time: datetime | None = None
 
 
+class AssertionRecordedResponse(BaseModel):
+    """Deliberately NOT SessionSummary: add_assertion_endpoint is
+    patient-facing and unauthenticated (see periop_core.auth / the
+    README's auth row), so its response must never leak the clinical
+    summary (gaps, conflicts, Model Layer state) to an unauthenticated
+    caller -- that's exactly the access boundary require_auth exists to
+    enforce elsewhere. Viewing the resulting summary requires logging in
+    and calling GET .../summary."""
+
+    session_id: uuid.UUID
+    assertion_id: uuid.UUID
+    recorded: bool = True
+
+
 class GapWithLabel(BaseModel):
     gap: InformationGap
     requirement_id: str
@@ -241,13 +255,14 @@ class UpdateCausalHypothesisStatusRequest(BaseModel):
 
 class ResolveConflictReviewRequest(BaseModel):
     """Moves a ConflictReview out of OPEN. RECONCILED without a
-    resolved_value, or either status without resolved_by/rationale, is
-    rejected with 422 by ConflictReview's own validator -- see its
-    docstring on why a resolution is never optional once a status
-    transition is requested."""
+    resolved_value, or either status without a rationale, is rejected
+    with 422 by ConflictReview's own validator -- see its docstring on
+    why a resolution is never optional once a status transition is
+    requested. `resolved_by` is NOT a request field: it's taken from
+    the authenticated caller (require_auth), never client-supplied --
+    see periop_core.auth."""
 
     status: ContradictionStatus  # RECONCILED or ESCALATED; enforced in the endpoint
-    resolved_by: str
     rationale: str
     resolved_value: Any | None = None
 
@@ -321,3 +336,32 @@ class AttentionWorkingSetResponse(BaseModel):
     working_set: list[str]
     forced_inclusions: list[str]
     candidates: list[AttentionCandidateResult]  # all candidates, ranked by score descending
+
+
+# ============================================================
+# Staff authentication -- see periop_core.auth
+# ============================================================
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str  # hashed server-side (periop_core.auth.hash_password); never stored/returned raw
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class UserPublic(BaseModel):
+    """A User, with password_hash deliberately omitted."""
+
+    user_id: uuid.UUID
+    username: str
+    created_at: datetime
+
+
+class LoginResponse(BaseModel):
+    token: str
+    user: UserPublic
+    expires_at: datetime

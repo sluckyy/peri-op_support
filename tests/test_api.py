@@ -23,6 +23,18 @@ def client(db_conninfo, monkeypatch):
     from periop_api.app import app
 
     with TestClient(app) as c:
+        # Most of this file's tests exercise staff-only endpoints
+        # (summary, audit, close) that require auth -- see
+        # periop_core.auth. Register+log in a throwaway staff account
+        # once per test and default every request on this client to
+        # carrying its token, so individual tests don't each need to.
+        # tests/test_auth.py covers the unauthenticated-is-rejected path
+        # directly against a client with no such header.
+        username = f"test-staff-{uuid.uuid4().hex[:12]}"
+        c.post("/api/auth/register", json={"username": username, "password": "test-password-1"})
+        login = c.post("/api/auth/login", json={"username": username, "password": "test-password-1"})
+        c.headers["Authorization"] = f"Bearer {login.json()['token']}"
+        c.staff_username = username  # for tests asserting resolved_by == the authenticated caller
         yield c
 
 
@@ -58,7 +70,10 @@ def test_full_happy_path_through_conflict_to_closure(client):
     assert resp.status_code == 200
     assert resp.json()["status"] == "ACTIVE"
 
-    # Agreeing assertion -> should resolve cleanly, no conflict.
+    # Agreeing assertion -> should resolve cleanly, no conflict. The
+    # assertions endpoint itself is patient-facing/unauthenticated and
+    # deliberately no longer returns the clinical summary (see
+    # AssertionRecordedResponse) -- fetch it separately as staff.
     resp = client.post(
         f"/api/sessions/{session_id}/assertions",
         json={
@@ -70,7 +85,8 @@ def test_full_happy_path_through_conflict_to_closure(client):
         },
     )
     assert resp.status_code == 200, resp.text
-    summary = resp.json()
+    assert resp.json()["recorded"] is True
+    summary = client.get(f"/api/sessions/{session_id}/summary").json()
     assert len(summary["working_facts"]) == 1
     assert len(summary["conflicts"]) == 0
     # The reconciler never produces a CONFIRMED verification_state on its
@@ -106,7 +122,8 @@ def test_full_happy_path_through_conflict_to_closure(client):
             "speaker": "SYSTEM",
         },
     )
-    summary = resp.json()
+    assert resp.status_code == 200, resp.text
+    summary = client.get(f"/api/sessions/{session_id}/summary").json()
     assert len(summary["conflicts"]) == 1
     assert summary["conflicts"][0]["materiality"] == "CRITICAL"
     # A plain Conflict on its own only downgrades closure, but ALL-003 is
@@ -126,12 +143,14 @@ def test_full_happy_path_through_conflict_to_closure(client):
         f"/api/sessions/{session_id}/conflict-reviews/{review_id}/resolve",
         json={
             "status": "RECONCILED",
-            "resolved_by": "dr-smith",
             "rationale": "EMR note is contemporaneous; patient recall is unreliable here",
             "resolved_value": "throat swelling after penicillin",
         },
     )
     assert resp.status_code == 200, resp.text
+    # resolved_by comes from the authenticated caller, never the request
+    # body -- see ResolveConflictReviewRequest's docstring.
+    assert resp.json()["resolution"]["resolved_by"] == client.staff_username
 
     # Resolving the review unblocks closure, but the underlying Conflict
     # itself is still OPEN (nothing here auto-resolves step 7) -- so it
@@ -172,7 +191,8 @@ def test_conflicting_assertions_log_a_durable_conflict_review(client):
             "speaker": "SYSTEM",
         },
     )
-    summary = resp.json()
+    assert resp.status_code == 200, resp.text
+    summary = client.get(f"/api/sessions/{session_id}/summary").json()
     assert len(summary["conflict_reviews"]) == 1
     review = summary["conflict_reviews"][0]
     assert review["status"] == "OPEN"
@@ -213,13 +233,14 @@ def test_resolving_a_conflict_review_persists_across_recompute(client):
             "speaker": "SYSTEM",
         },
     )
-    review_id = resp.json()["conflict_reviews"][0]["review_id"]
+    assert resp.status_code == 200, resp.text
+    review_id = client.get(f"/api/sessions/{session_id}/summary").json()["conflict_reviews"][0]["review_id"]
 
     # RECONCILED without resolved_value is rejected -- nothing was
     # actually decided.
     resp = client.post(
         f"/api/sessions/{session_id}/conflict-reviews/{review_id}/resolve",
-        json={"status": "RECONCILED", "resolved_by": "dr-smith", "rationale": "..."},
+        json={"status": "RECONCILED", "rationale": "..."},
     )
     assert resp.status_code == 422
 
@@ -227,21 +248,19 @@ def test_resolving_a_conflict_review_persists_across_recompute(client):
         f"/api/sessions/{session_id}/conflict-reviews/{review_id}/resolve",
         json={
             "status": "RECONCILED",
-            "resolved_by": "dr-smith",
             "rationale": "EMR note is contemporaneous; patient recall is unreliable here",
             "resolved_value": "throat swelling after penicillin",
         },
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "RECONCILED"
-    assert resp.json()["resolution"]["resolved_by"] == "dr-smith"
+    assert resp.json()["resolution"]["resolved_by"] == client.staff_username
 
     # Resolving an already-resolved review is rejected.
     resp = client.post(
         f"/api/sessions/{session_id}/conflict-reviews/{review_id}/resolve",
         json={
             "status": "ESCALATED",
-            "resolved_by": "dr-jones",
             "rationale": "second opinion",
         },
     )
@@ -260,7 +279,7 @@ def test_resolving_an_unknown_conflict_review_404s(client):
     session_id = session["session_id"]
     resp = client.post(
         f"/api/sessions/{session_id}/conflict-reviews/{uuid.uuid4()}/resolve",
-        json={"status": "ESCALATED", "resolved_by": "dr-smith", "rationale": "..."},
+        json={"status": "ESCALATED", "rationale": "..."},
     )
     assert resp.status_code == 404
 
@@ -294,7 +313,7 @@ def test_backdated_assertion_surfaces_as_a_stale_gap(client):
         },
     )
     assert resp.status_code == 200, resp.text
-    summary = resp.json()
+    summary = client.get(f"/api/sessions/{session_id}/summary").json()
 
     cur002_gaps = [g for g in summary["gaps"] if g["requirement_id"] == "CUR-002"]
     assert len(cur002_gaps) == 1

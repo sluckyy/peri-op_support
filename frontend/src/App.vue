@@ -7,21 +7,32 @@ import ModelLayerPanel from './components/ModelLayerPanel.vue'
 import CausalEcdCalculator from './components/CausalEcdCalculator.vue'
 import AttentionWorkingSetCalculator from './components/AttentionWorkingSetCalculator.vue'
 import AuditTrailPanel from './components/AuditTrailPanel.vue'
-import { api } from './api.js'
+import StaffAuthPanel from './components/StaffAuthPanel.vue'
+import { api, clearAuthToken } from './api.js'
 
 const session = ref(null)
 const summary = ref(null)
 const auditPanel = ref(null)
+const staffUsername = ref(null) // non-null once signed in -- see require_auth
 
 async function onSessionReady(activatedSession) {
   session.value = activatedSession
-  summary.value = await api.getSummary(activatedSession.session_id)
-  auditPanel.value?.load()
+  summary.value = null
+  if (staffUsername.value) {
+    summary.value = await api.getSummary(activatedSession.session_id)
+    auditPanel.value?.load()
+  }
 }
 
-function onAssertionAdded(newSummary) {
-  summary.value = newSummary
-  auditPanel.value?.load()
+async function onAssertionAdded() {
+  // add_assertion_endpoint is patient-facing/unauthenticated and
+  // deliberately no longer returns the clinical summary in its
+  // response (see AssertionRecordedResponse) -- only fetch it if
+  // staff is actually signed in to view it.
+  if (staffUsername.value && session.value) {
+    summary.value = await api.getSummary(session.value.session_id)
+    auditPanel.value?.load()
+  }
 }
 
 async function refreshSummary() {
@@ -32,6 +43,25 @@ async function refreshSummary() {
 function onClosed(newSummary) {
   summary.value = newSummary
   auditPanel.value?.load()
+}
+
+async function onAuthenticated({ username }) {
+  staffUsername.value = username
+  if (session.value) {
+    summary.value = await api.getSummary(session.value.session_id)
+    auditPanel.value?.load()
+  }
+}
+
+async function signOut() {
+  try {
+    await api.logout()
+  } catch (e) {
+    // Token already invalid/expired -- signing out locally still proceeds.
+  }
+  clearAuthToken()
+  staffUsername.value = null
+  summary.value = null
 }
 </script>
 
@@ -51,22 +81,48 @@ function onClosed(newSummary) {
 
     <template v-if="session">
       <AssertionForm :session-id="session.session_id" @added="onAssertionAdded" />
-      <SummaryPanel
-        v-if="summary"
-        :summary="summary"
-        @refresh="refreshSummary"
-        @closed="onClosed"
-      />
-      <ModelLayerPanel
-        v-if="summary"
-        :session-id="session.session_id"
-        :summary="summary"
-        @refresh="refreshSummary"
-      />
-      <AuditTrailPanel ref="auditPanel" :session-id="session.session_id" />
+    </template>
+
+    <StaffAuthPanel v-if="!staffUsername" @authenticated="onAuthenticated" />
+    <template v-else>
+      <div class="staff-bar">
+        Signed in as <strong>{{ staffUsername }}</strong>
+        <button class="inline-button" @click="signOut">sign out</button>
+      </div>
+      <template v-if="session">
+        <SummaryPanel
+          v-if="summary"
+          :summary="summary"
+          @refresh="refreshSummary"
+          @closed="onClosed"
+        />
+        <ModelLayerPanel
+          v-if="summary"
+          :session-id="session.session_id"
+          :summary="summary"
+          @refresh="refreshSummary"
+        />
+        <AuditTrailPanel ref="auditPanel" :session-id="session.session_id" />
+      </template>
+      <p v-else class="hint">Start a patient session above to view its data here.</p>
     </template>
 
     <CausalEcdCalculator />
     <AttentionWorkingSetCalculator />
   </main>
 </template>
+
+<style scoped>
+.staff-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 0.75rem;
+}
+.inline-button {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.75rem;
+}
+</style>

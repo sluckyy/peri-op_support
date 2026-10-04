@@ -117,7 +117,8 @@ gaps, reconciliation, safety gates, task ownership, audit.
 | Audit/provenance trail | **Partially implemented** (`periop_core.audit_db`, `db/migrations/0003_audit_trail.sql`). SVC-014's `appendEvent`/`getLineage` for the Phase 1 core session/assertion lifecycle (session created, AI-role notice acknowledged, session activated, an assertion added, session closed) **and** the v1.1 Model Layer mutations (hypothesis created/promoted, proposition corrected, obligation created, contradiction logged, uncertainty logged, repair created/resolved, psychological-safety signal applied, causal
 hypothesis created/status changed, conflict review created/resolved) — immutability enforced at the DB layer by triggers that reject `UPDATE`/`DELETE` on `audit_event`, not just application convention. Exposed as `GET /api/sessions/{id}/audit` and shown live in the demo UI, which refreshes after every Model Layer action too. **Not implemented**: Table 17's real Turn-submission audit events (need the Phase 2 orchestrator); `provenance_json`/`Provenance` fields on individual objects (a related but distinct mechanism) predate this and are unchanged. |
 | Persistence (`periop_core.db`) | **Implemented** for everything above — Session, Assertion, WorkingFact/Conflict (recomputed each reconciliation pass, not versioned), RequirementState/InformationGap (same), Task, PatientAgendaItem. Round-trip tested against real Postgres. Concurrency control (NFR-003) is **not implemented** -- see the module docstring. |
-| Demo API (`periop_api`) | **Implemented**: create session (with eligibility gate), acknowledge AI notice, activate, add assertion (demo shortcut), get summary, attempt closure, list concepts, the audit trail, and the full v1.1 Model Layer surface. HTTP-level tested (FastAPI TestClient + real Postgres), not just unit tested. **Not implemented**: the real Table 17 API surface (Turn submission through the orchestrator, FHIR projection/commit endpoints) and auth. |
+| Demo API (`periop_api`) | **Implemented**: create session (with eligibility gate), acknowledge AI notice, activate, add assertion (demo shortcut), get summary, attempt closure, list concepts, the audit trail, and the full v1.1 Model Layer surface. HTTP-level tested (FastAPI TestClient + real Postgres), not just unit tested. **Not implemented**: the real Table 17 API surface (Turn submission through the orchestrator, FHIR projection/commit endpoints). |
+| Staff authentication (`periop_core.auth`) | **Implemented** — real authentication, not a demo stand-in: salted `scrypt` password hashing (stdlib `hashlib.scrypt`, a memory-hard KDF, not a fast general-purpose hash) and unguessable opaque session tokens (`secrets.token_urlsafe`), persisted server-side so logout actually revokes a token rather than just expiring. Access boundary: patients submitting their own data (`POST .../sessions`, `.../notice`, `.../activate`, `.../assertions`) stay unauthenticated — there's no patient account — but every endpoint that views a session's clinical data or takes a clinical/Model-Layer action (`GET .../summary`, `GET .../audit`, `POST .../close`, every hypothesis/proposition/repair/obligation/contradiction/uncertainty/causal-hypothesis/psychological-safety/conflict-review endpoint) requires a valid `Authorization: Bearer <token>` from `POST /api/auth/login`. `POST .../assertions` itself deliberately stopped returning the full `SessionSummary` once this landed — unauthenticated, it would otherwise be a bypass of the exact wall `require_auth` exists to enforce — see `AssertionRecordedResponse`. A `ConflictReview` resolution's `resolved_by` is the authenticated caller's username, never a client-supplied string. **Documented limitation** (stated honestly, not hidden): single-factor username/password only — no email verification, password-reset flow, MFA, or login rate-limiting; a real deployment needs all of these. |
 | Demo frontend | **Implemented**: a single Vue page exercising the full demo flow, including the eligibility-rejection path and a live safety-critical-conflict scenario. Confirmed working in an actual headless-Chromium run, not just `npm run build` succeeding. |
 | LLM extraction/language, conversation orchestrator, InterviewAction selection, validator stack, FHIR adapter, real event architecture | **Not implemented** — these are Phase 2/3 per Table 24 and were deliberately left out rather than stubbed with empty classes that would misrepresent progress. |
 
@@ -175,7 +176,7 @@ pip install -e .
 python3 -m pytest -q
 ```
 
-165 tests currently pass: the model/reconciliation/gap-engine/closure/
+183 tests currently pass: the model/reconciliation/gap-engine/closure/
 eligibility unit tests, DB round-trip tests (skipped automatically if no
 local Postgres is reachable), HTTP-level API tests for both the Phase 1
 core and the v1.1 Model Layer endpoints, the Model Layer unit tests
@@ -183,7 +184,9 @@ core and the v1.1 Model Layer endpoints, the Model Layer unit tests
 safety, humour policy, correction propagation, contradiction/uncertainty
 logging, stored causal hypotheses), the attention working-set
 calculator's ranking and forced-inclusion tests, ConflictReview's
-validator and round-trip tests, reconciliation's freshness-assessment
+validator and round-trip tests, the auth boundary tests (password
+hashing, login/register, which endpoints require a token and which
+stay patient-facing), reconciliation's freshness-assessment
 tests, and the audit
 trail's lineage-reconstruction, DB-level immutability, and Model-Layer-
 mutation-coverage tests. Where a test pins down a

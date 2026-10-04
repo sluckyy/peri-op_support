@@ -18,11 +18,22 @@ export function formatApiError(e) {
   return e?.message ?? String(e)
 }
 
+// Staff auth token (periop_core.auth) -- never persisted (no
+// localStorage): a page reload means logging in again, which is fine
+// for this demo and avoids a stale/XSS-exposed token lingering longer
+// than the tab it was issued to.
+let authToken = null
+export function setAuthToken(token) {
+  authToken = token
+}
+export function clearAuthToken() {
+  authToken = null
+}
+
 async function request(path, options = {}) {
-  const resp = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  })
+  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) }
+  if (authToken) headers['Authorization'] = `Bearer ${authToken}`
+  const resp = await fetch(`${BASE}${path}`, { ...options, headers })
   const isJson = resp.headers.get('content-type')?.includes('application/json')
   const body = isJson ? await resp.json() : await resp.text()
   if (!resp.ok) {
@@ -134,4 +145,12 @@ export const api = {
 
   attentionWorkingSet: (payload) =>
     request('/tools/attention-working-set', { method: 'POST', body: JSON.stringify(payload) }),
+
+  register: (payload) =>
+    request('/auth/register', { method: 'POST', body: JSON.stringify(payload) }),
+
+  login: (payload) =>
+    request('/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
+
+  logout: () => request('/auth/logout', { method: 'POST' }),
 }
