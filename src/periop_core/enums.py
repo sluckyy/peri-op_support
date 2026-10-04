@@ -429,12 +429,24 @@ class ContradictionStatus(str, Enum):
 
 
 class AuditEventType(str, Enum):
-    """AuditEvent.event_type (SVC-014). Scoped for now to the Phase 1
-    core session/assertion lifecycle -- see periop_core.audit_db and
-    README "What's implemented" for what's wired in versus not yet."""
+    """AuditEvent.event_type (SVC-014). Covers the Phase 1 core
+    session/assertion lifecycle and the v1.1 Model Layer (§6A) mutations
+    -- see periop_core.audit_db and README "What's implemented" for what
+    else still isn't wired in (e.g. Table 17's real Turn-submission
+    events, which need the Phase 2 orchestrator)."""
 
     SESSION_CREATED = "SESSION_CREATED"
     NOTICE_ACKNOWLEDGED = "NOTICE_ACKNOWLEDGED"
     SESSION_ACTIVATED = "SESSION_ACTIVATED"
     ASSERTION_ADDED = "ASSERTION_ADDED"
     SESSION_CLOSED = "SESSION_CLOSED"
+
+    HYPOTHESIS_CREATED = "HYPOTHESIS_CREATED"
+    HYPOTHESIS_PROMOTED = "HYPOTHESIS_PROMOTED"
+    PROPOSITION_CORRECTED = "PROPOSITION_CORRECTED"
+    OBLIGATION_CREATED = "OBLIGATION_CREATED"
+    CONTRADICTION_LOGGED = "CONTRADICTION_LOGGED"
+    UNCERTAINTY_LOGGED = "UNCERTAINTY_LOGGED"
+    REPAIR_CREATED = "REPAIR_CREATED"
+    REPAIR_RESOLVED = "REPAIR_RESOLVED"
+    PSYCHOLOGICAL_SAFETY_SIGNAL_APPLIED = "PSYCHOLOGICAL_SAFETY_SIGNAL_APPLIED"

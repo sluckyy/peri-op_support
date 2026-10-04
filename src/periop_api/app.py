@@ -266,8 +266,9 @@ def close_session_endpoint(session_id: uuid.UUID, conn: psycopg.Connection = Dep
 
 @app.get("/api/sessions/{session_id}/audit", response_model=list[AuditEvent])
 def get_audit_lineage_endpoint(session_id: uuid.UUID, conn: psycopg.Connection = Depends(get_conn)):
-    """SVC-014's `getLineage`. Only covers the Phase 1 core lifecycle
-    events listed in periop_core.enums.AuditEventType -- see README."""
+    """SVC-014's `getLineage`. Covers the Phase 1 core lifecycle plus the
+    v1.1 Model Layer mutations listed in periop_core.enums.AuditEventType
+    -- see README."""
     _get_session_or_404(conn, session_id)
     return audit_db.get_lineage(conn, session_id)
 
@@ -293,6 +294,16 @@ def create_hypothesis_endpoint(
         # e.g. epistemic_level of L4+ (Table 9: "cannot be projected as fact")
         raise HTTPException(status_code=422, detail=str(exc)) from None
     model_layer_db.insert_conversational_hypothesis(conn, hypothesis)
+    audit_db.append_event(
+        conn,
+        AuditEvent(
+            session_id=session_id,
+            event_type=AuditEventType.HYPOTHESIS_CREATED,
+            entity_type="hypothesis",
+            entity_id=hypothesis.hypothesis_id,
+            payload={"content": hypothesis.content, "epistemic_level": hypothesis.epistemic_level.value},
+        ),
+    )
     return hypothesis
 
 
@@ -329,6 +340,16 @@ def promote_hypothesis_endpoint(
 
     model_layer_db.insert_grounded_proposition(conn, proposition)
     model_layer_db.update_conversational_hypothesis(conn, updated_hypothesis)
+    audit_db.append_event(
+        conn,
+        AuditEvent(
+            session_id=session_id,
+            event_type=AuditEventType.HYPOTHESIS_PROMOTED,
+            entity_type="hypothesis",
+            entity_id=hypothesis_id,
+            payload={"target_level": body.target_level.value, "proposition_id": str(proposition.proposition_id)},
+        ),
+    )
     return PromoteHypothesisResponse(hypothesis=updated_hypothesis, proposition=proposition)
 
 
@@ -391,6 +412,20 @@ def correct_proposition_endpoint(
         conn, original.proposition_id, replacement.proposition_id
     )
     model_layer_db.insert_repair_requirement(conn, repair)
+    audit_db.append_event(
+        conn,
+        AuditEvent(
+            session_id=session_id,
+            event_type=AuditEventType.PROPOSITION_CORRECTED,
+            entity_type="proposition",
+            entity_id=proposition_id,
+            payload={
+                "replacement_id": str(replacement.proposition_id),
+                "repair_id": str(repair.repair_id),
+                "dependents_found": dependents.total_count(),
+            },
+        ),
+    )
 
     updated_original = original.model_copy(update={"superseded_by": replacement.proposition_id})
     return CorrectPropositionResponse(
@@ -418,6 +453,16 @@ def create_obligation_endpoint(
         deadline=body.deadline,
     )
     model_layer_db.insert_prospective_obligation(conn, obligation)
+    audit_db.append_event(
+        conn,
+        AuditEvent(
+            session_id=session_id,
+            event_type=AuditEventType.OBLIGATION_CREATED,
+            entity_type="obligation",
+            entity_id=obligation.obligation_id,
+            payload={"content": obligation.content, "source": obligation.source},
+        ),
+    )
     return obligation
 
 
@@ -448,6 +493,16 @@ def create_contradiction_endpoint(
         # e.g. fewer than two involved_ids (Table 9 invariant).
         raise HTTPException(status_code=422, detail=str(exc)) from None
     model_layer_db.insert_contradiction(conn, contradiction)
+    audit_db.append_event(
+        conn,
+        AuditEvent(
+            session_id=session_id,
+            event_type=AuditEventType.CONTRADICTION_LOGGED,
+            entity_type="contradiction",
+            entity_id=contradiction.contradiction_id,
+            payload={"description": contradiction.description, "involved_ids": [str(i) for i in contradiction.involved_ids]},
+        ),
+    )
     return contradiction
 
 
@@ -475,6 +530,16 @@ def create_uncertainty_endpoint(
         kind=body.kind,
     )
     model_layer_db.insert_uncertainty(conn, uncertainty)
+    audit_db.append_event(
+        conn,
+        AuditEvent(
+            session_id=session_id,
+            event_type=AuditEventType.UNCERTAINTY_LOGGED,
+            entity_type="uncertainty",
+            entity_id=uncertainty.uncertainty_id,
+            payload={"description": uncertainty.description, "kind": uncertainty.kind},
+        ),
+    )
     return uncertainty
 
 
@@ -522,6 +587,16 @@ def create_repair_endpoint(
         raise HTTPException(status_code=422, detail=str(exc)) from None
 
     model_layer_db.insert_repair_requirement(conn, repair)
+    audit_db.append_event(
+        conn,
+        AuditEvent(
+            session_id=session_id,
+            event_type=AuditEventType.REPAIR_CREATED,
+            entity_type="repair",
+            entity_id=repair.repair_id,
+            payload={"repair_type": repair.repair_type.value, "materiality": repair.materiality.value},
+        ),
+    )
     return repair
 
 
@@ -537,6 +612,16 @@ def resolve_repair_endpoint(
 
     resolved = repair.model_copy(update={"status": RepairStatus.REPAIRED})
     model_layer_db.update_repair_requirement(conn, resolved)
+    audit_db.append_event(
+        conn,
+        AuditEvent(
+            session_id=session_id,
+            event_type=AuditEventType.REPAIR_RESOLVED,
+            entity_type="repair",
+            entity_id=repair_id,
+            payload={},
+        ),
+    )
     return resolved
 
 
@@ -561,6 +646,16 @@ def apply_psychological_safety_signal_endpoint(
     except KeyError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     model_layer_db.upsert_psychological_safety_state(conn, updated)
+    audit_db.append_event(
+        conn,
+        AuditEvent(
+            session_id=session_id,
+            event_type=AuditEventType.PSYCHOLOGICAL_SAFETY_SIGNAL_APPLIED,
+            entity_type="psychological_safety",
+            entity_id=session_id,
+            payload={"signal_names": body.signal_names, "estimate": updated.estimate},
+        ),
+    )
     return updated
 
 
