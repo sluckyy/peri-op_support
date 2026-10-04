@@ -342,3 +342,56 @@ def test_causal_ecd_invalid_prior_returns_422(client):
         json={"prior": {"PE": 0.9, "MI": 0.9}, "likelihoods": {"yes": {"PE": 1.0, "MI": 1.0}}},
     )
     assert resp.status_code == 422
+
+
+def test_contradiction_create_and_summary_inclusion(client):
+    session_id = _active_session(client)
+    resp = client.post(
+        f"/api/sessions/{session_id}/contradictions",
+        json={
+            "description": "patient said throat swelling, then said no reaction at all",
+            "involved_ids": [str(uuid.uuid4()), str(uuid.uuid4())],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    contradiction = resp.json()
+    assert contradiction["status"] == "OPEN"
+    assert contradiction["promoted_conflict_id"] is None
+
+    summary = client.get(f"/api/sessions/{session_id}/summary").json()
+    assert len(summary["contradictions"]) == 1
+    assert summary["contradictions"][0]["contradiction_id"] == contradiction["contradiction_id"]
+
+
+def test_contradiction_with_fewer_than_two_involved_ids_returns_422(client):
+    session_id = _active_session(client)
+    resp = client.post(
+        f"/api/sessions/{session_id}/contradictions",
+        json={"description": "only one thing, not actually a contradiction", "involved_ids": [str(uuid.uuid4())]},
+    )
+    assert resp.status_code == 422
+
+
+def test_uncertainty_create_with_and_without_concept(client):
+    session_id = _active_session(client)
+
+    resp = client.post(
+        f"/api/sessions/{session_id}/uncertainties",
+        json={"description": "unclear which knee", "kind": "AMBIGUITY"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["concept"] is None
+
+    resp = client.post(
+        f"/api/sessions/{session_id}/uncertainties",
+        json={
+            "description": "exact last dose time not given",
+            "kind": "MISSING_VALUE",
+            "concept_code": "MED-010",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["concept"]["code"] == "MED-010"
+
+    summary = client.get(f"/api/sessions/{session_id}/summary").json()
+    assert len(summary["uncertainties"]) == 2

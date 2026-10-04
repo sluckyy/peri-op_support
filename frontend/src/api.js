@@ -87,6 +87,18 @@ export const api = {
   resolveRepair: (sessionId, repairId) =>
     request(`/sessions/${sessionId}/repairs/${repairId}/resolve`, { method: 'POST' }),
 
+  createContradiction: (sessionId, payload) =>
+    request(`/sessions/${sessionId}/contradictions`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  createUncertainty: (sessionId, payload) =>
+    request(`/sessions/${sessionId}/uncertainties`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
   applyPsychSafetySignal: (sessionId, signalNames) =>
     request(`/sessions/${sessionId}/psychological-safety/signal`, {
       method: 'POST',
