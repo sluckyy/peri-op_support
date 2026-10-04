@@ -142,7 +142,7 @@ exercised in a real headless-browser run, not just built.
 
 | Table 13 capability | Status |
 |---|---|
-| Shared Meaning Workspace (GroundedProposition, ConversationalHypothesis, Uncertainty, Contradiction) | **Implemented and in the demo** for propositions/hypotheses (create + promote via the UI). GroundedProposition is floored at L4 (patient-grounded); ConversationalHypothesis is capped below L4 — enforced as pydantic validators. Uncertainty/Contradiction have DB persistence (`periop_core.model_layer_db`) but no dedicated UI yet — read/write them directly if needed. |
+| Shared Meaning Workspace (GroundedProposition, ConversationalHypothesis, Uncertainty, Contradiction) | **Implemented and in the demo** for all four. GroundedProposition is floored at L4 (patient-grounded); ConversationalHypothesis is capped below L4 — enforced as pydantic validators. Uncertainty (`POST .../uncertainties`) and Contradiction (`POST .../contradictions`, enforcing Table 9's "at least two involved items") now have create endpoints and a demo UI panel alongside hypotheses/propositions. **Not implemented**: promoting a Contradiction into a formal `periop_core.models.Conflict` (`promoted_conflict_id` stays unset) — WorkingFact/Conflict are recomputed wholesale on every reconciliation pass (see `periop_core.db`'s module docstring), so a standalone Conflict inserted outside that recompute would be silently wiped out by the next assertion; that's a real correctness bug waiting to happen, not a documented simplification, so it was deliberately left alone rather than forced in. |
 | Epistemic ladder and provenance | **Implemented and in the demo**. `periop_core.epistemic.can_promote()` enforces both spec-mandated gates: L2→L4+ requires grounding evidence, →L6 requires clinician adjudication; the UI's "Promote" button surfaces a blocked attempt's exact reason (verified in a browser run, not just a test). |
 | Repair queue and dependency-aware correction | **Implemented and in the demo**. Logging a DEFERRED repair without a reason *and* obligation is rejected (422); the UI creates the linked `ProspectiveObligation` inline. An OPEN CRITICAL repair blocks session closure through the full stack (core → API → UI), confirmed visually. `periop_core.model_layer_gate.find_dependents` (correction-propagation) is now wired end-to-end: correcting a `GroundedProposition` via `POST .../propositions/{id}/correct` marks the original `superseded_by` the replacement, runs real (exact-match, non-LLM) graph traversal over every hypothesis/proposition/causal-hypothesis in the session for anything that cited it as evidence, and always logs a `RepairRequirement` for the correction -- HIGH materiality if something depended on it, LOW if nothing did, but never silent. Exposed in the demo UI's propositions list. |
 | Patient agenda and prospective obligations | **Implemented** — PatientAgendaItem already existed (Phase 1); `ProspectiveObligation` is new, has no silent-expiry status, and is created/displayed via the repair-deferral flow in the demo. |
@@ -174,14 +174,14 @@ pip install -e .
 python3 -m pytest -q
 ```
 
-137 tests currently pass: the model/reconciliation/gap-engine/closure/
+140 tests currently pass: the model/reconciliation/gap-engine/closure/
 eligibility unit tests, DB round-trip tests (skipped automatically if no
 local Postgres is reachable), HTTP-level API tests for both the Phase 1
 core and the v1.1 Model Layer endpoints, the Model Layer unit tests
 (epistemic ladder, attention scoring, causal ECD/entropy, psychological
-safety, humour policy, correction propagation), reconciliation's
-freshness-assessment tests, and the audit trail's lineage-reconstruction
-and DB-level immutability tests. Where a test pins down a
+safety, humour policy, correction propagation, contradiction/uncertainty
+logging), reconciliation's freshness-assessment tests, and the audit
+trail's lineage-reconstruction and DB-level immutability tests. Where a test pins down a
 *documented current limitation* (e.g. the engine not yet resolving a
 stale-vs-current conflict via freshness, or a single-source assertion
 staying UNVERIFIED rather than auto-confirming), its docstring says so —

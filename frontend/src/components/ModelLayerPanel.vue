@@ -143,6 +143,38 @@ function resolveRepair(repairId) {
   guarded(() => api.resolveRepair(props.sessionId, repairId))
 }
 
+// ------------------------------------------------- contradictions / uncertainty
+
+const contradictionForm = reactive({ description: '', involved_id_1: '', involved_id_2: '' })
+
+function addContradiction() {
+  guarded(async () => {
+    if (!contradictionForm.description || !contradictionForm.involved_id_1 || !contradictionForm.involved_id_2) return
+    await api.createContradiction(props.sessionId, {
+      description: contradictionForm.description,
+      involved_ids: [contradictionForm.involved_id_1, contradictionForm.involved_id_2],
+    })
+    contradictionForm.description = ''
+    contradictionForm.involved_id_1 = ''
+    contradictionForm.involved_id_2 = ''
+  })
+}
+
+const uncertaintyForm = reactive({ description: '', kind: 'AMBIGUITY', concept_code: '' })
+
+function addUncertainty() {
+  guarded(async () => {
+    if (!uncertaintyForm.description) return
+    await api.createUncertainty(props.sessionId, {
+      description: uncertaintyForm.description,
+      kind: uncertaintyForm.kind,
+      concept_code: uncertaintyForm.concept_code || null,
+    })
+    uncertaintyForm.description = ''
+    uncertaintyForm.concept_code = ''
+  })
+}
+
 // ---------------------------------------------------- psychological safety
 
 const PS_SIGNALS = [
@@ -336,6 +368,58 @@ function checkHumour() {
         <span class="pill">{{ o.status }}</span>
         {{ o.content }}
         <span class="hint">&mdash; priority {{ o.priority }}, risk {{ o.risk }}</span>
+      </li>
+    </ul>
+
+    <h3>Contradictions ({{ summary.contradictions.length }})</h3>
+    <p class="hint">
+      A conversation-level incompatibility &mdash; distinct from a formal
+      clinical Conflict. Promoting one into a Conflict is not
+      implemented (WorkingFact/Conflict are recomputed wholesale each
+      reconciliation pass, so a standalone Conflict inserted here would
+      just be silently wiped out by the next assertion). IDs below are
+      free-form for the demo &mdash; in the real system they'd be actual
+      hypothesis/proposition/assertion IDs.
+    </p>
+    <div class="form-row">
+      <input v-model="contradictionForm.description" placeholder="what doesn't fit together" class="wide" />
+      <input v-model="contradictionForm.involved_id_1" placeholder="involved id #1" />
+      <input v-model="contradictionForm.involved_id_2" placeholder="involved id #2" />
+      <button
+        :disabled="busy || !contradictionForm.description || !contradictionForm.involved_id_1 || !contradictionForm.involved_id_2"
+        @click="addContradiction"
+      >
+        Log contradiction
+      </button>
+    </div>
+    <ul class="stack">
+      <li v-for="c in summary.contradictions" :key="c.contradiction_id" class="entry">
+        <span class="pill">{{ c.status }}</span>
+        {{ c.description }}
+      </li>
+    </ul>
+
+    <h3>Uncertainties ({{ summary.uncertainties.length }})</h3>
+    <p class="hint">
+      An explicit unresolved ambiguity, missing value or uncertain
+      interpretation &mdash; deliberately distinct from a negative
+      finding (unknown must never collapse into "no").
+    </p>
+    <div class="form-row">
+      <input v-model="uncertaintyForm.description" placeholder="what's unresolved" class="wide" />
+      <select v-model="uncertaintyForm.kind">
+        <option value="AMBIGUITY">AMBIGUITY</option>
+        <option value="MISSING_VALUE">MISSING_VALUE</option>
+        <option value="UNCERTAIN_INTERPRETATION">UNCERTAIN_INTERPRETATION</option>
+      </select>
+      <input v-model="uncertaintyForm.concept_code" placeholder="concept code (optional)" />
+      <button :disabled="busy || !uncertaintyForm.description" @click="addUncertainty">Log uncertainty</button>
+    </div>
+    <ul class="stack">
+      <li v-for="u in summary.uncertainties" :key="u.uncertainty_id" class="entry">
+        <span class="pill">{{ u.kind }}</span>
+        {{ u.description }}
+        <span v-if="u.concept" class="hint">&mdash; {{ u.concept.code }}</span>
       </li>
     </ul>
 

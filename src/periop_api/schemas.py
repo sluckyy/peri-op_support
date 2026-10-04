@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from periop_core.enums import (
     AssertionState,
     Certainty,
+    ContradictionStatus,
     EpistemicLevel,
     Materiality,
     RepairStatus,
@@ -17,11 +18,13 @@ from periop_core.enums import (
     Speaker,
 )
 from periop_core.model_layer import (
+    Contradiction,
     ConversationalHypothesis,
     GroundedProposition,
     ProspectiveObligation,
     PsychologicalSafetyState,
     RepairRequirement,
+    Uncertainty,
 )
 from periop_core.models import (
     Conflict,
@@ -99,6 +102,8 @@ class SessionSummary(BaseModel):
     propositions: list[GroundedProposition] = []
     obligations: list[ProspectiveObligation] = []
     repairs: list[RepairRequirement] = []
+    contradictions: list[Contradiction] = []
+    uncertainties: list[Uncertainty] = []
     psychological_safety: PsychologicalSafetyState | None = None
 
 
@@ -135,6 +140,29 @@ class PromoteHypothesisResponse(BaseModel):
 
 class PromotionRejectedResponse(BaseModel):
     reasons: list[str]
+
+
+class CreateUncertaintyRequest(BaseModel):
+    """Table 9: an explicit unresolved ambiguity/missing-value/uncertain
+    interpretation -- deliberately not a negative finding. See
+    periop_core.model_layer.Uncertainty's docstring."""
+
+    description: str
+    kind: str = "AMBIGUITY"  # AMBIGUITY | MISSING_VALUE | UNCERTAIN_INTERPRETATION
+    concept_code: str | None = None
+    concept_text: str | None = None
+
+
+class CreateContradictionRequest(BaseModel):
+    """Table 9: incompatible assertions/interpretations, distinct from a
+    Clinical State Conflict -- see periop_core.model_layer's module
+    docstring. `involved_ids` holds the hypothesis/proposition/
+    assertion IDs that don't fit together (at least two, enforced by
+    Contradiction itself)."""
+
+    description: str
+    involved_ids: list[uuid.UUID]
+    status: ContradictionStatus = ContradictionStatus.OPEN
 
 
 class CreateObligationRequest(BaseModel):

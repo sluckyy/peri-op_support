@@ -18,11 +18,13 @@ from periop_core.epistemic import PromotionNotPermitted, promote_to_grounded_pro
 from periop_core.gap_engine import compute_gaps, evaluate_requirements
 from periop_core.humour_policy import HumourContext, is_humour_permitted
 from periop_core.model_layer import (
+    Contradiction,
     ConversationalHypothesis,
     GroundedProposition,
     ProspectiveObligation,
     PsychologicalSafetyState,
     RepairRequirement,
+    Uncertainty,
 )
 from periop_core.model_layer_gate import (
     find_dependents,
@@ -44,10 +46,12 @@ from periop_api.schemas import (
     ConceptOption,
     CorrectPropositionRequest,
     CorrectPropositionResponse,
+    CreateContradictionRequest,
     CreateHypothesisRequest,
     CreateObligationRequest,
     CreateRepairRequest,
     CreateSessionRequest,
+    CreateUncertaintyRequest,
     GapWithLabel,
     HumourCheckRequest,
     HumourCheckResponse,
@@ -417,6 +421,63 @@ def create_obligation_endpoint(
     return obligation
 
 
+@app.post("/api/sessions/{session_id}/contradictions", response_model=Contradiction)
+def create_contradiction_endpoint(
+    session_id: uuid.UUID,
+    body: CreateContradictionRequest,
+    conn: psycopg.Connection = Depends(get_conn),
+):
+    """Table 9 -- a conversation-level incompatibility, distinct from a
+    Clinical State Conflict. **Not implemented**: promoting a
+    Contradiction into a formal `periop_core.models.Conflict`
+    (`promoted_conflict_id`) -- see periop_core.model_layer's module
+    docstring; WorkingFact/Conflict are recomputed wholesale each
+    reconciliation pass (periop_core.db), so a standalone Conflict
+    inserted here would be silently wiped out by the next assertion,
+    which would be a real correctness bug, not a documented
+    simplification. This endpoint only logs the Contradiction itself."""
+    _get_session_or_404(conn, session_id)
+    try:
+        contradiction = Contradiction(
+            session_id=session_id,
+            description=body.description,
+            involved_ids=body.involved_ids,
+            status=body.status,
+        )
+    except ValueError as exc:
+        # e.g. fewer than two involved_ids (Table 9 invariant).
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    model_layer_db.insert_contradiction(conn, contradiction)
+    return contradiction
+
+
+@app.post("/api/sessions/{session_id}/uncertainties", response_model=Uncertainty)
+def create_uncertainty_endpoint(
+    session_id: uuid.UUID,
+    body: CreateUncertaintyRequest,
+    conn: psycopg.Connection = Depends(get_conn),
+):
+    """Table 9 -- an explicit unresolved ambiguity/missing-value/
+    uncertain interpretation, deliberately distinct from a negative
+    finding. See periop_core.model_layer.Uncertainty's docstring."""
+    _get_session_or_404(conn, session_id)
+    concept = None
+    if body.concept_code:
+        labels = default_concept_labels()
+        concept_label = labels.get(body.concept_code, {}).get("concept", body.concept_code)
+        concept = ConceptReference(
+            original_text=body.concept_text or concept_label, code=body.concept_code
+        )
+    uncertainty = Uncertainty(
+        session_id=session_id,
+        concept=concept,
+        description=body.description,
+        kind=body.kind,
+    )
+    model_layer_db.insert_uncertainty(conn, uncertainty)
+    return uncertainty
+
+
 @app.post("/api/sessions/{session_id}/repairs", response_model=RepairRequirement)
 def create_repair_endpoint(
     session_id: uuid.UUID,
@@ -584,6 +645,8 @@ def _recompute_and_summarise(conn: psycopg.Connection, session_id: uuid.UUID) ->
     propositions = model_layer_db.list_grounded_propositions(conn, session_id)
     obligations = model_layer_db.list_prospective_obligations(conn, session_id)
     repairs = model_layer_db.list_repair_requirements(conn, session_id)
+    contradictions = model_layer_db.list_contradictions(conn, session_id)
+    uncertainties = model_layer_db.list_uncertainties(conn, session_id)
     psychological_safety = model_layer_db.get_psychological_safety_state(conn, session_id)
 
     closure = evaluate_closure(
@@ -610,6 +673,8 @@ def _recompute_and_summarise(conn: psycopg.Connection, session_id: uuid.UUID) ->
         propositions=propositions,
         obligations=obligations,
         repairs=repairs,
+        contradictions=contradictions,
+        uncertainties=uncertainties,
         psychological_safety=psychological_safety,
     )
 
