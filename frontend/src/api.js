@@ -59,6 +59,12 @@ export const api = {
   closeSession: (sessionId) =>
     request(`/sessions/${sessionId}/close`, { method: 'POST' }),
 
+  resolveConflictReview: (sessionId, reviewId, payload) =>
+    request(`/sessions/${sessionId}/conflict-reviews/${reviewId}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
   // v1.1 Model Layer (§6A)
   createHypothesis: (sessionId, payload) =>
     request(`/sessions/${sessionId}/hypotheses`, {

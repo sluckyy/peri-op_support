@@ -30,6 +30,7 @@ from periop_core.enums import (
     Certainty,
     ConflictStatus,
     ConflictType,
+    ContradictionStatus,
     CueStatus,
     CueType,
     EligibilityResult,
@@ -229,6 +230,96 @@ class Conflict(BaseModel):
         rule, which this generic model has no knowledge of — so the
         conservative answer for HIGH/CRITICAL is always False here."""
         return self.materiality in (Materiality.LOW, Materiality.MODERATE)
+
+
+class ConflictReviewSide(BaseModel):
+    """One side of a ConflictReview -- a verbatim snapshot, taken at the
+    moment the disagreement was detected, of one of the Assertions that
+    disagree. Carries exactly what a clinician needs to judge it without
+    joining back to the assertion table: who said it, when, and the
+    patient's own words alongside the extracted value."""
+
+    assertion_id: uuid.UUID
+    source_type: str
+    speaker: Speaker
+    value: Any | None = None
+    original_text: str
+    recorded_at: datetime
+
+
+class ConflictResolution(BaseModel):
+    """A clinician's decision on a ConflictReview. `resolved_value` is
+    the value they decided is correct; left unset for an ESCALATED
+    review, since escalating means nothing was decided yet -- but who
+    escalated it and why are still required, never optional."""
+
+    resolved_by: str
+    rationale: str
+    resolved_value: Any | None = None
+    resolved_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ConflictReview(BaseModel):
+    """A durable, never-recomputed record of one real patient-vs-record
+    disagreement and how a clinician resolved it.
+
+    Deliberately NOT a field on `Conflict` itself: WorkingFact/Conflict
+    rows are recomputed wholesale on every reconciliation pass (see
+    periop_core.db's module docstring) -- a clinician's decision stored
+    there would be silently wiped out the next time anyone merely loaded
+    the session summary. This object is append-once / targeted-update-
+    only, the same persistence style as the v1.1 Model Layer's
+    RepairRequirement/Contradiction (periop_core.model_layer_db), even
+    though it lives alongside Conflict conceptually rather than in the
+    Model Layer.
+
+    `review_id` is a deterministic function of the session and the
+    disagreeing assertion set (see periop_api's wiring) so re-running
+    reconciliation over the same disagreement finds the existing review
+    instead of creating a duplicate, while a genuinely new disagreement
+    (a third conflicting statement arrives) naturally gets its own.
+
+    Scope honestly stated: this is a durable log of real clinician
+    decisions over time, nothing more. Using that log to actually
+    retrain or auto-tune reconciliation's source-fitness rules is out of
+    scope here -- see Table 13 §6A.14 ("population policy learning...
+    an offline research/governance capability, not autonomous MVP
+    runtime") -- but the log is exactly the substrate such a thing would
+    need, which is reason enough to capture it now regardless of whether
+    that's ever built.
+    """
+
+    review_id: uuid.UUID
+    session_id: uuid.UUID
+    conflict_id: uuid.UUID
+    concept: ConceptReference
+    sides: list[ConflictReviewSide]
+    status: ContradictionStatus = ContradictionStatus.OPEN
+    resolution: ConflictResolution | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    @field_validator("sides")
+    @classmethod
+    def _needs_at_least_two_sides(
+        cls, v: list[ConflictReviewSide]
+    ) -> list[ConflictReviewSide]:
+        if len(v) < 2:
+            raise ValueError("A ConflictReview must capture at least two disagreeing sides")
+        return v
+
+    @model_validator(mode="after")
+    def _status_transitions_require_a_recorded_decision(self) -> "ConflictReview":
+        if self.status == ContradictionStatus.RECONCILED:
+            if self.resolution is None or self.resolution.resolved_value is None:
+                raise ValueError(
+                    "RECONCILED requires a resolution with a resolved_value -- "
+                    "a clinician must have actually decided which side is correct"
+                )
+        if self.status == ContradictionStatus.ESCALATED and self.resolution is None:
+            raise ValueError(
+                "ESCALATED requires a resolution recording who escalated it and why"
+            )
+        return self
 
 
 class Requirement(BaseModel):

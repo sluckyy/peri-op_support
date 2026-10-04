@@ -9,11 +9,17 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from periop_core import audit_db, db, model_layer_db
+from periop_core import audit_db, conflict_review_db, db, model_layer_db
 from periop_core.causal_reasoning import entropy, expected_clinical_discrimination
 from periop_core.dataset import default_concept_labels, default_requirements
 from periop_core.eligibility import EligibilityContext, evaluate_eligibility
-from periop_core.enums import AuditEventType, EligibilityResult, RepairStatus, SessionStatus
+from periop_core.enums import (
+    AuditEventType,
+    ContradictionStatus,
+    EligibilityResult,
+    RepairStatus,
+    SessionStatus,
+)
 from periop_core.epistemic import PromotionNotPermitted, promote_to_grounded_proposition
 from periop_core.gap_engine import compute_gaps, evaluate_requirements
 from periop_core.humour_policy import HumourContext, is_humour_permitted
@@ -32,7 +38,15 @@ from periop_core.model_layer_gate import (
     reference_string,
     required_repair_for_correction,
 )
-from periop_core.models import Assertion, AuditEvent, ConceptReference, Session, SourceReference
+from periop_core.models import (
+    Assertion,
+    AuditEvent,
+    ConceptReference,
+    ConflictReview,
+    ConflictReviewSide,
+    Session,
+    SourceReference,
+)
 from periop_core.psychological_safety import initial_state as initial_ps_state
 from periop_core.psychological_safety import update as update_ps_state
 from periop_core.reconciliation import reconcile
@@ -60,6 +74,7 @@ from periop_api.schemas import (
     PromoteHypothesisRequest,
     PromoteHypothesisResponse,
     PsychologicalSafetySignalRequest,
+    ResolveConflictReviewRequest,
     SessionSummary,
     UpdateCausalHypothesisStatusRequest,
 )
@@ -274,6 +289,71 @@ def get_audit_lineage_endpoint(session_id: uuid.UUID, conn: psycopg.Connection =
     -- see README."""
     _get_session_or_404(conn, session_id)
     return audit_db.get_lineage(conn, session_id)
+
+
+@app.post(
+    "/api/sessions/{session_id}/conflict-reviews/{review_id}/resolve",
+    response_model=ConflictReview,
+)
+def resolve_conflict_review_endpoint(
+    session_id: uuid.UUID,
+    review_id: uuid.UUID,
+    body: ResolveConflictReviewRequest,
+    conn: psycopg.Connection = Depends(get_conn),
+):
+    """A ConflictReview is logged automatically (see
+    _log_new_conflict_reviews) the first time reconciliation detects a
+    real patient-vs-record disagreement -- this is how a clinician
+    records the decision. RECONCILED means they picked which side is
+    correct (`resolved_value` required); ESCALATED means neither side
+    is trusted as-is, but who escalated it and why are still required.
+    Both are enforced by ConflictReview's own validator, not a
+    hand-written check here -- a status transition without a recorded
+    decision fails with 422."""
+    _get_session_or_404(conn, session_id)
+    if body.status not in (ContradictionStatus.RECONCILED, ContradictionStatus.ESCALATED):
+        raise HTTPException(
+            status_code=422, detail="status must be RECONCILED or ESCALATED"
+        )
+    try:
+        review = conflict_review_db.get_conflict_review(conn, review_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail=f"ConflictReview {review_id} not found"
+        ) from None
+    if review.status != ContradictionStatus.OPEN:
+        raise HTTPException(
+            status_code=409,
+            detail=f"ConflictReview {review_id} is already {review.status.value}",
+        )
+
+    try:
+        updated = ConflictReview(
+            **{
+                **review.model_dump(),
+                "status": body.status,
+                "resolution": {
+                    "resolved_by": body.resolved_by,
+                    "rationale": body.rationale,
+                    "resolved_value": body.resolved_value,
+                },
+            }
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    conflict_review_db.update_conflict_review_resolution(conn, updated)
+    audit_db.append_event(
+        conn,
+        AuditEvent(
+            session_id=session_id,
+            event_type=AuditEventType.CONFLICT_REVIEW_RESOLVED,
+            entity_type="conflict_review",
+            entity_id=review_id,
+            payload={"status": updated.status.value, "resolved_by": body.resolved_by},
+        ),
+    )
+    return updated
 
 
 @app.post("/api/sessions/{session_id}/hypotheses", response_model=ConversationalHypothesis)
@@ -782,6 +862,78 @@ def _get_session_or_404(conn: psycopg.Connection, session_id: uuid.UUID) -> Sess
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found") from None
 
 
+# Fixed namespace for deterministic ConflictReview ids -- see
+# _conflict_review_id below and ConflictReview's docstring on why the id
+# must be stable across recomputes rather than minted fresh each time.
+_CONFLICT_REVIEW_NAMESPACE = uuid.UUID("5b6e4f0a-5e8b-4f1a-9b3a-4c7b1f6d2a10")
+
+
+def _conflict_review_id(session_id: uuid.UUID, assertion_ids: list[uuid.UUID]) -> uuid.UUID:
+    key = str(session_id) + ":" + ",".join(sorted(str(a) for a in assertion_ids))
+    return uuid.uuid5(_CONFLICT_REVIEW_NAMESPACE, key)
+
+
+def _log_new_conflict_reviews(
+    conn: psycopg.Connection,
+    session_id: uuid.UUID,
+    conflicts: list,
+    assertions: list[Assertion],
+) -> None:
+    """For every Conflict this reconciliation pass produced, log a durable
+    ConflictReview the first time this exact disagreeing-assertion-set is
+    seen -- never touching one that already exists, so a clinician's
+    resolution is never overwritten by the next recompute. See
+    ConflictReview's docstring for why this can't just be a field on
+    Conflict itself."""
+    assertions_by_id = {a.assertion_id: a for a in assertions}
+    for conflict in conflicts:
+        review_id = _conflict_review_id(session_id, conflict.assertion_ids)
+        try:
+            conflict_review_db.get_conflict_review(conn, review_id)
+            continue
+        except KeyError:
+            pass
+
+        sides = []
+        concept = None
+        for assertion_id in conflict.assertion_ids:
+            assertion = assertions_by_id.get(assertion_id)
+            if assertion is None:
+                continue
+            concept = concept or assertion.concept
+            sides.append(
+                ConflictReviewSide(
+                    assertion_id=assertion.assertion_id,
+                    source_type=assertion.source.source_type,
+                    speaker=assertion.source.speaker,
+                    value=assertion.value,
+                    original_text=assertion.concept.original_text,
+                    recorded_at=assertion.assertion_time,
+                )
+            )
+        if concept is None or len(sides) < 2:
+            continue
+
+        review = ConflictReview(
+            review_id=review_id,
+            session_id=session_id,
+            conflict_id=conflict.conflict_id,
+            concept=concept,
+            sides=sides,
+        )
+        conflict_review_db.insert_conflict_review(conn, review)
+        audit_db.append_event(
+            conn,
+            AuditEvent(
+                session_id=session_id,
+                event_type=AuditEventType.CONFLICT_REVIEW_CREATED,
+                entity_type="conflict_review",
+                entity_id=review.review_id,
+                payload={"concept_code": concept.code, "sides": len(sides)},
+            ),
+        )
+
+
 def _recompute_and_summarise(conn: psycopg.Connection, session_id: uuid.UUID) -> SessionSummary:
     """Re-run reconciliation and gap evaluation over the session's full
     assertion history and persist the (recomputed, not accumulated --
@@ -793,6 +945,7 @@ def _recompute_and_summarise(conn: psycopg.Connection, session_id: uuid.UUID) ->
     assertions = db.list_assertions(conn, session_id)
     facts, conflicts = reconcile(assertions)
     db.replace_reconciliation_state(conn, session_id, facts, conflicts)
+    _log_new_conflict_reviews(conn, session_id, conflicts, assertions)
 
     working_facts_by_requirement = {
         fact.concept.code: fact for fact in facts if fact.concept.code in requirements
@@ -832,6 +985,7 @@ def _recompute_and_summarise(conn: psycopg.Connection, session_id: uuid.UUID) ->
     uncertainties = model_layer_db.list_uncertainties(conn, session_id)
     causal_hypotheses = model_layer_db.list_causal_hypotheses(conn, session_id)
     psychological_safety = model_layer_db.get_psychological_safety_state(conn, session_id)
+    conflict_reviews = conflict_review_db.list_conflict_reviews(conn, session_id)
 
     closure = evaluate_closure(
         open_tasks=tasks,
@@ -844,6 +998,7 @@ def _recompute_and_summarise(conn: psycopg.Connection, session_id: uuid.UUID) ->
         session=session,
         working_facts=facts,
         conflicts=conflicts,
+        conflict_reviews=conflict_reviews,
         requirement_states=states,
         gaps=gaps_with_labels,
         tasks=tasks,

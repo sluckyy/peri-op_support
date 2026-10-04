@@ -30,6 +30,7 @@ from periop_core.model_layer import (
 )
 from periop_core.models import (
     Conflict,
+    ConflictReview,
     InformationGap,
     OpenTask,
     PatientAgendaItem,
@@ -94,6 +95,7 @@ class SessionSummary(BaseModel):
     session: Session
     working_facts: list[WorkingFact]
     conflicts: list[Conflict]
+    conflict_reviews: list[ConflictReview] = []
     requirement_states: list[RequirementState]
     gaps: list[GapWithLabel]
     tasks: list[OpenTask]
@@ -235,6 +237,19 @@ class UpdateCausalHypothesisStatusRequest(BaseModel):
 
     status: CausalRelationStatus
     adjudicated_by: str | None = None
+
+
+class ResolveConflictReviewRequest(BaseModel):
+    """Moves a ConflictReview out of OPEN. RECONCILED without a
+    resolved_value, or either status without resolved_by/rationale, is
+    rejected with 422 by ConflictReview's own validator -- see its
+    docstring on why a resolution is never optional once a status
+    transition is requested."""
+
+    status: ContradictionStatus  # RECONCILED or ESCALATED; enforced in the endpoint
+    resolved_by: str
+    rationale: str
+    resolved_value: Any | None = None
 
 
 class PsychologicalSafetySignalRequest(BaseModel):
