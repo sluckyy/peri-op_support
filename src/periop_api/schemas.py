@@ -281,3 +281,43 @@ class CausalEcdResponse(BaseModel):
     prior_entropy: float
     expected_posterior_entropy: float
     ecd: float
+
+
+class AttentionFactorsInput(BaseModel):
+    """periop_core.attention.AttentionFactors, as request fields -- all
+    in [0, 1] (enforced by AttentionFactors itself, not duplicated here).
+    `topic_distance` is a cost, subtracted rather than boosting the score."""
+
+    risk: float = 0.0
+    uncertainty: float = 0.0
+    clinical_value: float = 0.0
+    patient_salience: float = 0.0
+    emotion: float = 0.0
+    goal_relevance: float = 0.0
+    deadline_proximity: float = 0.0
+    trigger_match: float = 0.0
+    topic_distance: float = 0.0
+    recency: float = 0.0
+
+
+class AttentionCandidateInput(BaseModel):
+    label: str
+    factors: AttentionFactorsInput
+
+
+class AttentionWorkingSetRequest(BaseModel):
+    candidates: list[AttentionCandidateInput]
+    max_size: int = 5
+
+
+class AttentionCandidateResult(BaseModel):
+    label: str
+    score: float
+    in_working_set: bool
+    forced_inclusion: bool
+
+
+class AttentionWorkingSetResponse(BaseModel):
+    working_set: list[str]
+    forced_inclusions: list[str]
+    candidates: list[AttentionCandidateResult]  # all candidates, ranked by score descending

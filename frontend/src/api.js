@@ -131,4 +131,7 @@ export const api = {
 
   causalEcd: (payload) =>
     request('/tools/causal-ecd', { method: 'POST', body: JSON.stringify(payload) }),
+
+  attentionWorkingSet: (payload) =>
+    request('/tools/attention-working-set', { method: 'POST', body: JSON.stringify(payload) }),
 }

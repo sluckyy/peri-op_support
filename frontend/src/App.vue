@@ -5,6 +5,7 @@ import AssertionForm from './components/AssertionForm.vue'
 import SummaryPanel from './components/SummaryPanel.vue'
 import ModelLayerPanel from './components/ModelLayerPanel.vue'
 import CausalEcdCalculator from './components/CausalEcdCalculator.vue'
+import AttentionWorkingSetCalculator from './components/AttentionWorkingSetCalculator.vue'
 import AuditTrailPanel from './components/AuditTrailPanel.vue'
 import { api } from './api.js'
 
@@ -66,5 +67,6 @@ function onClosed(newSummary) {
     </template>
 
     <CausalEcdCalculator />
+    <AttentionWorkingSetCalculator />
   </main>
 </template>
