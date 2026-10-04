@@ -460,6 +460,39 @@ def list_causal_hypotheses(conn: psycopg.Connection, session_id: uuid.UUID) -> l
     ]
 
 
+def get_causal_hypothesis(conn: psycopg.Connection, causal_id: uuid.UUID) -> CausalHypothesis:
+    row = conn.execute(
+        """
+        SELECT causal_id, session_id, cause, effect, supporting_evidence_json,
+               alternatives_json, confidence, status, adjudicated_by
+        FROM causal_hypothesis WHERE causal_id = %s
+        """,
+        (causal_id,),
+    ).fetchone()
+    if row is None:
+        raise KeyError(f"CausalHypothesis {causal_id} not found")
+    return CausalHypothesis(
+        causal_id=row[0],
+        session_id=row[1],
+        cause=row[2],
+        effect=row[3],
+        supporting_evidence=row[4],
+        alternatives=row[5],
+        confidence=float(row[6]),
+        status=row[7],
+        adjudicated_by=row[8],
+    )
+
+
+def update_causal_hypothesis_status(conn: psycopg.Connection, causal: CausalHypothesis) -> None:
+    conn.execute(
+        """
+        UPDATE causal_hypothesis SET status = %s, adjudicated_by = %s WHERE causal_id = %s
+        """,
+        (causal.status.value, causal.adjudicated_by, causal.causal_id),
+    )
+
+
 # ----------------------------------------------------- psychological safety
 
 def upsert_psychological_safety_state(

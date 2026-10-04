@@ -18,6 +18,7 @@ from periop_core.epistemic import PromotionNotPermitted, promote_to_grounded_pro
 from periop_core.gap_engine import compute_gaps, evaluate_requirements
 from periop_core.humour_policy import HumourContext, is_humour_permitted
 from periop_core.model_layer import (
+    CausalHypothesis,
     Contradiction,
     ConversationalHypothesis,
     GroundedProposition,
@@ -46,6 +47,7 @@ from periop_api.schemas import (
     ConceptOption,
     CorrectPropositionRequest,
     CorrectPropositionResponse,
+    CreateCausalHypothesisRequest,
     CreateContradictionRequest,
     CreateHypothesisRequest,
     CreateObligationRequest,
@@ -59,6 +61,7 @@ from periop_api.schemas import (
     PromoteHypothesisResponse,
     PsychologicalSafetySignalRequest,
     SessionSummary,
+    UpdateCausalHypothesisStatusRequest,
 )
 
 app = FastAPI(
@@ -543,6 +546,91 @@ def create_uncertainty_endpoint(
     return uncertainty
 
 
+@app.post("/api/sessions/{session_id}/causal-hypotheses", response_model=CausalHypothesis)
+def create_causal_hypothesis_endpoint(
+    session_id: uuid.UUID,
+    body: CreateCausalHypothesisRequest,
+    conn: psycopg.Connection = Depends(get_conn),
+):
+    """Table 9 / 6A.10 -- a provisional cause-effect explanation. Kept
+    distinct from the standalone causal-ECD calculator
+    (POST /api/tools/causal-ecd): this persists an actual session-scoped
+    CausalHypothesis row; the calculator is just Shannon-entropy maths
+    over a prior/likelihoods the caller supplies."""
+    _get_session_or_404(conn, session_id)
+    try:
+        causal = CausalHypothesis(
+            session_id=session_id,
+            cause=body.cause,
+            effect=body.effect,
+            supporting_evidence=body.supporting_evidence,
+            alternatives=body.alternatives,
+            confidence=body.confidence,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    model_layer_db.insert_causal_hypothesis(conn, causal)
+    audit_db.append_event(
+        conn,
+        AuditEvent(
+            session_id=session_id,
+            event_type=AuditEventType.CAUSAL_HYPOTHESIS_CREATED,
+            entity_type="causal_hypothesis",
+            entity_id=causal.causal_id,
+            payload={"cause": causal.cause, "effect": causal.effect, "confidence": causal.confidence},
+        ),
+    )
+    return causal
+
+
+@app.post(
+    "/api/sessions/{session_id}/causal-hypotheses/{causal_id}/status",
+    response_model=CausalHypothesis,
+)
+def update_causal_hypothesis_status_endpoint(
+    session_id: uuid.UUID,
+    causal_id: uuid.UUID,
+    body: UpdateCausalHypothesisStatusRequest,
+    conn: psycopg.Connection = Depends(get_conn),
+):
+    """6A.10 -- moves a CausalHypothesis along CausalRelationStatus (e.g.
+    DISCRIMINATED once a discriminating question has been asked, or
+    ADJUDICATED once a clinician has reached a judgement). Reaching
+    ADJUDICATED without `adjudicated_by` fails with 422 -- the object's
+    own validator, not a hand-written check here: 'causal hypotheses do
+    not become authoritative causal assertions without clinician
+    adjudication'."""
+    _get_session_or_404(conn, session_id)
+    try:
+        causal = model_layer_db.get_causal_hypothesis(conn, causal_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"CausalHypothesis {causal_id} not found") from None
+
+    try:
+        updated = CausalHypothesis(
+            **{
+                **causal.model_dump(),
+                "status": body.status,
+                "adjudicated_by": body.adjudicated_by,
+            }
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    model_layer_db.update_causal_hypothesis_status(conn, updated)
+    audit_db.append_event(
+        conn,
+        AuditEvent(
+            session_id=session_id,
+            event_type=AuditEventType.CAUSAL_HYPOTHESIS_STATUS_CHANGED,
+            entity_type="causal_hypothesis",
+            entity_id=causal_id,
+            payload={"status": updated.status.value, "adjudicated_by": updated.adjudicated_by},
+        ),
+    )
+    return updated
+
+
 @app.post("/api/sessions/{session_id}/repairs", response_model=RepairRequirement)
 def create_repair_endpoint(
     session_id: uuid.UUID,
@@ -742,6 +830,7 @@ def _recompute_and_summarise(conn: psycopg.Connection, session_id: uuid.UUID) ->
     repairs = model_layer_db.list_repair_requirements(conn, session_id)
     contradictions = model_layer_db.list_contradictions(conn, session_id)
     uncertainties = model_layer_db.list_uncertainties(conn, session_id)
+    causal_hypotheses = model_layer_db.list_causal_hypotheses(conn, session_id)
     psychological_safety = model_layer_db.get_psychological_safety_state(conn, session_id)
 
     closure = evaluate_closure(
@@ -770,6 +859,7 @@ def _recompute_and_summarise(conn: psycopg.Connection, session_id: uuid.UUID) ->
         repairs=repairs,
         contradictions=contradictions,
         uncertainties=uncertainties,
+        causal_hypotheses=causal_hypotheses,
         psychological_safety=psychological_safety,
     )
 

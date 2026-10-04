@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from periop_core.enums import (
     AssertionState,
+    CausalRelationStatus,
     Certainty,
     ContradictionStatus,
     EpistemicLevel,
@@ -18,6 +19,7 @@ from periop_core.enums import (
     Speaker,
 )
 from periop_core.model_layer import (
+    CausalHypothesis,
     Contradiction,
     ConversationalHypothesis,
     GroundedProposition,
@@ -104,6 +106,7 @@ class SessionSummary(BaseModel):
     repairs: list[RepairRequirement] = []
     contradictions: list[Contradiction] = []
     uncertainties: list[Uncertainty] = []
+    causal_hypotheses: list[CausalHypothesis] = []
     psychological_safety: PsychologicalSafetyState | None = None
 
 
@@ -209,6 +212,29 @@ class CorrectPropositionResponse(BaseModel):
     replacement: GroundedProposition
     repair: RepairRequirement
     dependents_found: int
+
+
+class CreateCausalHypothesisRequest(BaseModel):
+    """Table 9 / 6A.10: a provisional cause-effect explanation, distinct
+    from an established causal assertion -- see
+    periop_core.model_layer.CausalHypothesis's docstring."""
+
+    cause: str
+    effect: str
+    supporting_evidence: list[str] = []
+    alternatives: list[str] = []
+    confidence: float
+
+
+class UpdateCausalHypothesisStatusRequest(BaseModel):
+    """Moves a CausalHypothesis along CausalRelationStatus. Reaching
+    ADJUDICATED without `adjudicated_by` is rejected with 422 by
+    CausalHypothesis's own validator, not a hand-written check here --
+    'causal hypotheses do not become authoritative causal assertions
+    without clinician adjudication' (6A.10)."""
+
+    status: CausalRelationStatus
+    adjudicated_by: str | None = None
 
 
 class PsychologicalSafetySignalRequest(BaseModel):

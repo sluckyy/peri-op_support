@@ -99,6 +99,18 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  createCausalHypothesis: (sessionId, payload) =>
+    request(`/sessions/${sessionId}/causal-hypotheses`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateCausalHypothesisStatus: (sessionId, causalId, payload) =>
+    request(`/sessions/${sessionId}/causal-hypotheses/${causalId}/status`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
   applyPsychSafetySignal: (sessionId, signalNames) =>
     request(`/sessions/${sessionId}/psychological-safety/signal`, {
       method: 'POST',
