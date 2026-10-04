@@ -37,6 +37,7 @@ from periop_core.model_layer_db import (
     get_grounded_proposition,
     get_psychological_safety_state,
     get_repair_requirement,
+    get_causal_hypothesis,
     insert_causal_hypothesis,
     insert_contradiction,
     insert_conversational_hypothesis,
@@ -51,6 +52,7 @@ from periop_core.model_layer_db import (
     list_prospective_obligations,
     list_repair_requirements,
     list_uncertainties,
+    update_causal_hypothesis_status,
     update_conversational_hypothesis,
     update_grounded_proposition_superseded,
     update_repair_requirement,
@@ -254,6 +256,34 @@ def test_causal_hypothesis_round_trip(db_conn):
     assert len(fetched) == 1
     assert fetched[0].status == CausalRelationStatus.HYPOTHESIS
     assert fetched[0].alternatives == ["viral exanthem"]
+
+
+def test_causal_hypothesis_get_and_update_status(db_conn):
+    session = _session(db_conn)
+    causal = CausalHypothesis(
+        session_id=session.session_id,
+        cause="recent antibiotic course",
+        effect="rash",
+        confidence=0.6,
+    )
+    insert_causal_hypothesis(db_conn, causal)
+
+    fetched = get_causal_hypothesis(db_conn, causal.causal_id)
+    assert fetched.status == CausalRelationStatus.HYPOTHESIS
+
+    adjudicated = fetched.model_copy(
+        update={"status": CausalRelationStatus.ADJUDICATED, "adjudicated_by": "dr-smith"}
+    )
+    update_causal_hypothesis_status(db_conn, adjudicated)
+
+    refetched = get_causal_hypothesis(db_conn, causal.causal_id)
+    assert refetched.status == CausalRelationStatus.ADJUDICATED
+    assert refetched.adjudicated_by == "dr-smith"
+
+
+def test_get_causal_hypothesis_missing_raises_keyerror(db_conn):
+    with pytest.raises(KeyError):
+        get_causal_hypothesis(db_conn, uuid.uuid4())
 
 
 def test_psychological_safety_state_upsert(db_conn):

@@ -175,6 +175,48 @@ function addUncertainty() {
   })
 }
 
+// --------------------------------------------------------- causal hypotheses
+
+const causalForm = reactive({ cause: '', effect: '', confidence: '0.5', alternatives: '' })
+const adjudicateForms = reactive({}) // causal_id -> { status, adjudicated_by }
+
+function addCausalHypothesis() {
+  guarded(async () => {
+    if (!causalForm.cause || !causalForm.effect) return
+    const alternatives = causalForm.alternatives
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    await api.createCausalHypothesis(props.sessionId, {
+      cause: causalForm.cause,
+      effect: causalForm.effect,
+      confidence: Number(causalForm.confidence),
+      alternatives,
+    })
+    causalForm.cause = ''
+    causalForm.effect = ''
+    causalForm.alternatives = ''
+  })
+}
+
+function adjudicateForm(causalId) {
+  if (!adjudicateForms[causalId]) {
+    adjudicateForms[causalId] = { status: 'DISCRIMINATED', adjudicated_by: '' }
+  }
+  return adjudicateForms[causalId]
+}
+
+function updateCausalStatus(causalId) {
+  guarded(async () => {
+    const form = adjudicateForm(causalId)
+    await api.updateCausalHypothesisStatus(props.sessionId, causalId, {
+      status: form.status,
+      adjudicated_by: form.adjudicated_by || null,
+    })
+    delete adjudicateForms[causalId]
+  })
+}
+
 // ---------------------------------------------------- psychological safety
 
 const PS_SIGNALS = [
@@ -423,6 +465,46 @@ function checkHumour() {
       </li>
     </ul>
 
+    <h3>Causal hypotheses ({{ summary.causal_hypotheses.length }})</h3>
+    <p class="hint">
+      A provisional cause-effect explanation (6A.10) &mdash; chronology,
+      association and causation stay separate relations. Reaching
+      ADJUDICATED without a clinician marker is rejected by the API
+      (422): "causal hypotheses do not become authoritative causal
+      assertions without clinician adjudication."
+    </p>
+    <div class="form-row">
+      <input v-model="causalForm.cause" placeholder="cause, e.g. recent antibiotic course" />
+      <input v-model="causalForm.effect" placeholder="effect, e.g. rash" />
+      <input v-model="causalForm.confidence" type="number" min="0" max="1" step="0.05" placeholder="confidence" />
+      <button :disabled="busy || !causalForm.cause || !causalForm.effect" @click="addCausalHypothesis">
+        Add causal hypothesis
+      </button>
+    </div>
+    <ul class="stack">
+      <li v-for="ch in summary.causal_hypotheses" :key="ch.causal_id" class="entry">
+        <div class="entry-head">
+          <span class="pill" :class="`causal-status-${ch.status.toLowerCase()}`">{{ ch.status }}</span>
+          <span>{{ ch.cause }} &rarr; {{ ch.effect }}</span>
+          <span class="hint">(confidence {{ ch.confidence }})</span>
+        </div>
+        <span v-if="ch.adjudicated_by" class="hint">&mdash; adjudicated by {{ ch.adjudicated_by }}</span>
+        <div v-if="ch.status !== 'ADJUDICATED' && ch.status !== 'RETRACTED'" class="promote-form">
+          <select v-model="adjudicateForm(ch.causal_id).status">
+            <option value="DISCRIMINATED">mark DISCRIMINATED</option>
+            <option value="ADJUDICATED">mark ADJUDICATED</option>
+            <option value="RETRACTED">mark RETRACTED</option>
+          </select>
+          <input
+            v-if="adjudicateForm(ch.causal_id).status === 'ADJUDICATED'"
+            v-model="adjudicateForm(ch.causal_id).adjudicated_by"
+            placeholder="adjudicated by (required)"
+          />
+          <button :disabled="busy" @click="updateCausalStatus(ch.causal_id)">Update status</button>
+        </div>
+      </li>
+    </ul>
+
     <h3>Psychological safety (PSt)</h3>
     <p class="hint">
       A bounded heuristic, not a validated measure &mdash; see
@@ -538,6 +620,22 @@ function checkHumour() {
 .materiality-low {
   background: #e6f0ff;
   color: #17469b;
+}
+.causal-status-hypothesis {
+  background: #fff3cd;
+  color: #7a5b00;
+}
+.causal-status-discriminated {
+  background: #e6f0ff;
+  color: #17469b;
+}
+.causal-status-adjudicated {
+  background: #d1f7d6;
+  color: #196a2b;
+}
+.causal-status-retracted {
+  background: var(--border);
+  color: #666;
 }
 .inline-button {
   margin-left: 0.5rem;

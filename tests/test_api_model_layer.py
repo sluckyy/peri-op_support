@@ -395,3 +395,57 @@ def test_uncertainty_create_with_and_without_concept(client):
 
     summary = client.get(f"/api/sessions/{session_id}/summary").json()
     assert len(summary["uncertainties"]) == 2
+
+
+def test_causal_hypothesis_create_and_summary_inclusion(client):
+    session_id = _active_session(client)
+    resp = client.post(
+        f"/api/sessions/{session_id}/causal-hypotheses",
+        json={
+            "cause": "recent antibiotic course",
+            "effect": "rash",
+            "confidence": 0.6,
+            "alternatives": ["viral exanthem"],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    causal = resp.json()
+    assert causal["status"] == "HYPOTHESIS"
+
+    summary = client.get(f"/api/sessions/{session_id}/summary").json()
+    assert len(summary["causal_hypotheses"]) == 1
+    assert summary["causal_hypotheses"][0]["causal_id"] == causal["causal_id"]
+
+
+def test_causal_hypothesis_adjudication_requires_marker(client):
+    session_id = _active_session(client)
+    causal = client.post(
+        f"/api/sessions/{session_id}/causal-hypotheses",
+        json={"cause": "recent antibiotic course", "effect": "rash", "confidence": 0.6},
+    ).json()
+
+    # Blocked: ADJUDICATED without adjudicated_by.
+    resp = client.post(
+        f"/api/sessions/{session_id}/causal-hypotheses/{causal['causal_id']}/status",
+        json={"status": "ADJUDICATED"},
+    )
+    assert resp.status_code == 422
+
+    # Succeeds with a marker.
+    resp = client.post(
+        f"/api/sessions/{session_id}/causal-hypotheses/{causal['causal_id']}/status",
+        json={"status": "ADJUDICATED", "adjudicated_by": "dr-smith"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "ADJUDICATED"
+    assert body["adjudicated_by"] == "dr-smith"
+
+
+def test_causal_hypothesis_status_update_404s_for_unknown_id(client):
+    session_id = _active_session(client)
+    resp = client.post(
+        f"/api/sessions/{session_id}/causal-hypotheses/{uuid.uuid4()}/status",
+        json={"status": "DISCRIMINATED"},
+    )
+    assert resp.status_code == 404
