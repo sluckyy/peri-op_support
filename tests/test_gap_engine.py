@@ -100,3 +100,28 @@ def test_conflicting_fact_outranks_plain_missing_data_within_the_same_requiremen
     assert conflict_gap.gap_type == GapType.CONFLICTING
     assert missing_gap.gap_type == GapType.MISSING
     assert conflict_gap.priority_score > missing_gap.priority_score
+
+
+def test_stale_working_fact_generates_a_stale_gap_not_silently_confirmed():
+    """periop_core.reconciliation now actually produces STALE (freshness
+    assessment, step 3) -- this exercises the downstream path that was
+    already built (InformationState.STALE, GapType.STALE) but previously
+    unreachable, since nothing ever set VerificationState.STALE before."""
+    session_id = uuid.uuid4()
+    requirements = {"CUR-002": _requirement("CUR-002", RequirementClass.M0)}
+    stale_fact = WorkingFact(
+        session_id=session_id,
+        concept=ConceptReference(original_text="recent health change"),
+        verification_state=VerificationState.STALE,
+        freshness={"classification": "STALE"},
+        supporting_assertion_ids=[uuid.uuid4()],
+    )
+
+    states = evaluate_requirements(
+        session_id, requirements, working_facts_by_requirement={"CUR-002": stale_fact}
+    )
+    gaps = compute_gaps(states, requirements)
+
+    assert states[0].information_state == InformationState.STALE
+    assert len(gaps) == 1
+    assert gaps[0].gap_type == GapType.STALE

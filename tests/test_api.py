@@ -6,6 +6,7 @@ tests wouldn't.
 """
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -121,6 +122,39 @@ def test_concepts_endpoint_returns_all_343(client):
     resp = client.get("/api/concepts")
     assert resp.status_code == 200
     assert len(resp.json()) == 343
+
+
+def test_backdated_assertion_surfaces_as_a_stale_gap(client):
+    """Reconciliation's freshness assessment (step 3), exercised through
+    the real HTTP layer: a single-source assertion backdated well past
+    the default staleness threshold should show up as a STALE gap, not
+    silently satisfy the requirement forever."""
+    session = _create_eligible_session(client, subject_ref="pt-stale")
+    session_id = session["session_id"]
+    client.post(f"/api/sessions/{session_id}/notice")
+    client.post(f"/api/sessions/{session_id}/activate")
+
+    old_time = (datetime.now(timezone.utc) - timedelta(days=400)).isoformat()
+    resp = client.post(
+        f"/api/sessions/{session_id}/assertions",
+        json={
+            "concept_code": "CUR-002",
+            "value": "no recent change",
+            "assertion_state": "AFFIRMED",
+            "source_type": "PATIENT",
+            "speaker": "PATIENT",
+            "assertion_time": old_time,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    summary = resp.json()
+
+    cur002_gaps = [g for g in summary["gaps"] if g["requirement_id"] == "CUR-002"]
+    assert len(cur002_gaps) == 1
+    assert cur002_gaps[0]["gap"]["gap_type"] == "STALE"
+
+    fact = next(f for f in summary["working_facts"] if f["concept"]["code"] == "CUR-002")
+    assert fact["verification_state"] == "STALE"
 
 
 def test_audit_lineage_reconstructs_session_lifecycle(client):
