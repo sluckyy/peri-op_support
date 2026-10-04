@@ -5,6 +5,8 @@ conftest's db_conninfo fixture applies both 0001_init.sql and
 """
 import uuid
 
+import pytest
+
 from periop_core.enums import (
     AssertionState,
     CausalRelationStatus,
@@ -32,6 +34,7 @@ from periop_core.model_layer import (
 )
 from periop_core.model_layer_db import (
     get_conversational_hypothesis,
+    get_grounded_proposition,
     get_psychological_safety_state,
     get_repair_requirement,
     insert_causal_hypothesis,
@@ -49,6 +52,7 @@ from periop_core.model_layer_db import (
     list_repair_requirements,
     list_uncertainties,
     update_conversational_hypothesis,
+    update_grounded_proposition_superseded,
     update_repair_requirement,
     upsert_psychological_safety_state,
 )
@@ -88,6 +92,37 @@ def test_grounded_proposition_round_trip(db_conn):
     assert fetched[0].content == prop.content
     assert fetched[0].concept.code == "ALL-003"
     assert fetched[0].epistemic_level == EpistemicLevel.L4_PATIENT_GROUNDED
+
+
+def test_grounded_proposition_get_and_mark_superseded(db_conn):
+    session = _session(db_conn)
+    original = GroundedProposition(
+        session_id=session.session_id,
+        content="NKDA",
+        epistemic_level=EpistemicLevel.L4_PATIENT_GROUNDED,
+        grounding_evidence=["patient denied any allergies"],
+    )
+    insert_grounded_proposition(db_conn, original)
+    assert get_grounded_proposition(db_conn, original.proposition_id).superseded_by is None
+
+    replacement = GroundedProposition(
+        session_id=session.session_id,
+        content="confirmed penicillin allergy (correction)",
+        epistemic_level=EpistemicLevel.L4_PATIENT_GROUNDED,
+        grounding_evidence=["patient corrected themselves on direct questioning"],
+    )
+    insert_grounded_proposition(db_conn, replacement)
+    update_grounded_proposition_superseded(
+        db_conn, original.proposition_id, replacement.proposition_id
+    )
+
+    fetched = get_grounded_proposition(db_conn, original.proposition_id)
+    assert fetched.superseded_by == replacement.proposition_id
+
+
+def test_get_grounded_proposition_missing_raises_keyerror(db_conn):
+    with pytest.raises(KeyError):
+        get_grounded_proposition(db_conn, uuid.uuid4())
 
 
 def test_conversational_hypothesis_round_trip_and_update(db_conn):

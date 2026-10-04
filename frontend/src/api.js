@@ -72,6 +72,12 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  correctProposition: (sessionId, propositionId, payload) =>
+    request(`/sessions/${sessionId}/propositions/${propositionId}/correct`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
   createRepair: (sessionId, payload) =>
     request(`/sessions/${sessionId}/repairs`, {
       method: 'POST',

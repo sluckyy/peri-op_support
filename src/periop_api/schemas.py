@@ -165,6 +165,24 @@ class RepairValidationErrorResponse(BaseModel):
     message: str
 
 
+class CorrectPropositionRequest(BaseModel):
+    """6A.4 correction propagation: replace a GroundedProposition's
+    content with corrected content, grounded by new evidence. The
+    original is marked superseded_by the replacement; anything that
+    cited the original as evidence becomes a mandatory RepairRequirement
+    -- see periop_core.model_layer_gate."""
+
+    content: str
+    grounding_evidence: list[str]
+
+
+class CorrectPropositionResponse(BaseModel):
+    original: GroundedProposition
+    replacement: GroundedProposition
+    repair: RepairRequirement
+    dependents_found: int
+
+
 class PsychologicalSafetySignalRequest(BaseModel):
     signal_names: list[str]
 

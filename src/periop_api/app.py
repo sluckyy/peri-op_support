@@ -19,9 +19,15 @@ from periop_core.gap_engine import compute_gaps, evaluate_requirements
 from periop_core.humour_policy import HumourContext, is_humour_permitted
 from periop_core.model_layer import (
     ConversationalHypothesis,
+    GroundedProposition,
     ProspectiveObligation,
     PsychologicalSafetyState,
     RepairRequirement,
+)
+from periop_core.model_layer_gate import (
+    find_dependents,
+    reference_string,
+    required_repair_for_correction,
 )
 from periop_core.models import Assertion, AuditEvent, ConceptReference, Session, SourceReference
 from periop_core.psychological_safety import initial_state as initial_ps_state
@@ -36,6 +42,8 @@ from periop_api.schemas import (
     CausalEcdResponse,
     ClosurePreview,
     ConceptOption,
+    CorrectPropositionRequest,
+    CorrectPropositionResponse,
     CreateHypothesisRequest,
     CreateObligationRequest,
     CreateRepairRequest,
@@ -318,6 +326,75 @@ def promote_hypothesis_endpoint(
     model_layer_db.insert_grounded_proposition(conn, proposition)
     model_layer_db.update_conversational_hypothesis(conn, updated_hypothesis)
     return PromoteHypothesisResponse(hypothesis=updated_hypothesis, proposition=proposition)
+
+
+@app.post(
+    "/api/sessions/{session_id}/propositions/{proposition_id}/correct",
+    response_model=CorrectPropositionResponse,
+)
+def correct_proposition_endpoint(
+    session_id: uuid.UUID,
+    proposition_id: uuid.UUID,
+    body: CorrectPropositionRequest,
+    conn: psycopg.Connection = Depends(get_conn),
+):
+    """v1.1 §6A.4 ('a repaired fact must propagate through the assertion
+    graph and invalidate stale downstream inference') / §6A.15 ('repair
+    is mandatory when material misunderstanding is detected'). Replaces
+    a GroundedProposition's content, marks the original superseded_by
+    the replacement, and -- real exact-match graph traversal, not an
+    LLM judgement call, see periop_core.model_layer_gate's docstring --
+    finds every hypothesis/proposition/causal hypothesis that cited the
+    original as evidence and logs a RepairRequirement for the
+    correction. The repair is created even when nothing depended on the
+    original: a correction is never silent."""
+    _get_session_or_404(conn, session_id)
+    try:
+        original = model_layer_db.get_grounded_proposition(conn, proposition_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=404, detail=f"Proposition {proposition_id} not found"
+        ) from None
+    if original.superseded_by is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Proposition {proposition_id} is already superseded by {original.superseded_by}",
+        )
+
+    try:
+        replacement = GroundedProposition(
+            session_id=session_id,
+            content=body.content,
+            concept=original.concept,
+            epistemic_level=original.epistemic_level,
+            grounding_evidence=body.grounding_evidence,
+            source_assertion_ids=original.source_assertion_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    ref = reference_string("proposition", original.proposition_id)
+    dependents = find_dependents(
+        ref,
+        hypotheses=model_layer_db.list_conversational_hypotheses(conn, session_id),
+        propositions=model_layer_db.list_grounded_propositions(conn, session_id),
+        causal_hypotheses=model_layer_db.list_causal_hypotheses(conn, session_id),
+    )
+    repair = required_repair_for_correction(ref, dependents, session_id=session_id)
+
+    model_layer_db.insert_grounded_proposition(conn, replacement)
+    model_layer_db.update_grounded_proposition_superseded(
+        conn, original.proposition_id, replacement.proposition_id
+    )
+    model_layer_db.insert_repair_requirement(conn, repair)
+
+    updated_original = original.model_copy(update={"superseded_by": replacement.proposition_id})
+    return CorrectPropositionResponse(
+        original=updated_original,
+        replacement=replacement,
+        repair=repair,
+        dependents_found=dependents.total_count(),
+    )
 
 
 @app.post("/api/sessions/{session_id}/obligations", response_model=ProspectiveObligation)

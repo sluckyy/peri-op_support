@@ -131,18 +131,20 @@ epistemic/causal/psychological-safety/humour reasoning, persistence
 (`db/migrations/0002_model_layer.sql`, `periop_core.model_layer_db`),
 and a full round-trip through the demo API and Vue UI — you can create a
 hypothesis, attempt (and get blocked from) an ungrounded promotion, then
-promote it properly with evidence; log a repair, defer it (which
-requires an obligation), resolve it; watch a CRITICAL open repair block
-session closure end-to-end through the UI; apply psychological-safety
-signals and watch the estimate move; check the humour gate; and run the
-causal-discrimination calculator — all exercised in a real headless-
-browser run, not just built.
+promote it properly with evidence; correct the resulting proposition and
+watch correction-propagation log a repair automatically (HIGH materiality
+if something cited it as evidence, LOW if nothing did); log a repair,
+defer it (which requires an obligation), resolve it; watch a CRITICAL
+open repair block session closure end-to-end through the UI; apply
+psychological-safety signals and watch the estimate move; check the
+humour gate; and run the causal-discrimination calculator — all
+exercised in a real headless-browser run, not just built.
 
 | Table 13 capability | Status |
 |---|---|
 | Shared Meaning Workspace (GroundedProposition, ConversationalHypothesis, Uncertainty, Contradiction) | **Implemented and in the demo** for propositions/hypotheses (create + promote via the UI). GroundedProposition is floored at L4 (patient-grounded); ConversationalHypothesis is capped below L4 — enforced as pydantic validators. Uncertainty/Contradiction have DB persistence (`periop_core.model_layer_db`) but no dedicated UI yet — read/write them directly if needed. |
 | Epistemic ladder and provenance | **Implemented and in the demo**. `periop_core.epistemic.can_promote()` enforces both spec-mandated gates: L2→L4+ requires grounding evidence, →L6 requires clinician adjudication; the UI's "Promote" button surfaces a blocked attempt's exact reason (verified in a browser run, not just a test). |
-| Repair queue and dependency-aware correction | **Implemented and in the demo**. Logging a DEFERRED repair without a reason *and* obligation is rejected (422); the UI creates the linked `ProspectiveObligation` inline. An OPEN CRITICAL repair blocks session closure through the full stack (core → API → UI), confirmed visually. `periop_core.model_layer_gate.find_dependents` (correction-propagation) is implemented and unit-tested but not yet exposed in the demo UI. |
+| Repair queue and dependency-aware correction | **Implemented and in the demo**. Logging a DEFERRED repair without a reason *and* obligation is rejected (422); the UI creates the linked `ProspectiveObligation` inline. An OPEN CRITICAL repair blocks session closure through the full stack (core → API → UI), confirmed visually. `periop_core.model_layer_gate.find_dependents` (correction-propagation) is now wired end-to-end: correcting a `GroundedProposition` via `POST .../propositions/{id}/correct` marks the original `superseded_by` the replacement, runs real (exact-match, non-LLM) graph traversal over every hypothesis/proposition/causal-hypothesis in the session for anything that cited it as evidence, and always logs a `RepairRequirement` for the correction -- HIGH materiality if something depended on it, LOW if nothing did, but never silent. Exposed in the demo UI's propositions list. |
 | Patient agenda and prospective obligations | **Implemented** — PatientAgendaItem already existed (Phase 1); `ProspectiveObligation` is new, has no silent-expiry status, and is created/displayed via the repair-deferral flow in the demo. |
 | Working-memory/attention selection | **Implemented, not in the demo**. A real, tested weighted-sum implementation of Attention_i(t) in `periop_core.attention`, including forced inclusion of high-risk items beyond the working-set size cap. Not surfaced in the UI — there's no live conversation feed of candidate items to rank yet. **Documented limitation**: the weights are a reasonable starting point, not a calibrated set. |
 | Psychological-safety actions: humility, normalisation, invite correction | **Partially implemented and in the demo** for the PSt estimate itself: `periop_core.psychological_safety`'s bounded, named-signal heuristic is applied and persisted per-session, with signal buttons in the UI. Explicitly *not* a validated psychological measure (see its docstring). The action classes (INVITE_CORRECTION, ACKNOWLEDGE_LIMITATION, NORMALISE, etc.) exist in `ActionType` but nothing selects them in a live conversation — that's Orchestrator work. |
@@ -172,7 +174,7 @@ pip install -e .
 python3 -m pytest -q
 ```
 
-131 tests currently pass: the model/reconciliation/gap-engine/closure/
+137 tests currently pass: the model/reconciliation/gap-engine/closure/
 eligibility unit tests, DB round-trip tests (skipped automatically if no
 local Postgres is reachable), HTTP-level API tests for both the Phase 1
 core and the v1.1 Model Layer endpoints, the Model Layer unit tests

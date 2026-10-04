@@ -85,6 +85,31 @@ def list_grounded_propositions(
     return [_row_to_grounded_proposition(r) for r in rows]
 
 
+def get_grounded_proposition(
+    conn: psycopg.Connection, proposition_id: uuid.UUID
+) -> GroundedProposition:
+    row = conn.execute(
+        """
+        SELECT proposition_id, session_id, content, concept_json, epistemic_level,
+               grounding_evidence_json, source_assertion_ids_json, established_at, superseded_by
+        FROM grounded_proposition WHERE proposition_id = %s
+        """,
+        (proposition_id,),
+    ).fetchone()
+    if row is None:
+        raise KeyError(f"GroundedProposition {proposition_id} not found")
+    return _row_to_grounded_proposition(row)
+
+
+def update_grounded_proposition_superseded(
+    conn: psycopg.Connection, proposition_id: uuid.UUID, superseded_by: uuid.UUID
+) -> None:
+    conn.execute(
+        "UPDATE grounded_proposition SET superseded_by = %s WHERE proposition_id = %s",
+        (superseded_by, proposition_id),
+    )
+
+
 # ------------------------------------------------------------ hypotheses
 
 def insert_conversational_hypothesis(
