@@ -54,6 +54,8 @@ export const api = {
 
   getSummary: (sessionId) => request(`/sessions/${sessionId}/summary`),
 
+  getAuditLineage: (sessionId) => request(`/sessions/${sessionId}/audit`),
+
   closeSession: (sessionId) =>
     request(`/sessions/${sessionId}/close`, { method: 'POST' }),
 

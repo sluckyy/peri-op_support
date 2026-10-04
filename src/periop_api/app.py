@@ -9,11 +9,11 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from periop_core import db, model_layer_db
+from periop_core import audit_db, db, model_layer_db
 from periop_core.causal_reasoning import entropy, expected_clinical_discrimination
 from periop_core.dataset import default_concept_labels, default_requirements
 from periop_core.eligibility import EligibilityContext, evaluate_eligibility
-from periop_core.enums import EligibilityResult, RepairStatus, SessionStatus
+from periop_core.enums import AuditEventType, EligibilityResult, RepairStatus, SessionStatus
 from periop_core.epistemic import PromotionNotPermitted, promote_to_grounded_proposition
 from periop_core.gap_engine import compute_gaps, evaluate_requirements
 from periop_core.humour_policy import HumourContext, is_humour_permitted
@@ -23,7 +23,7 @@ from periop_core.model_layer import (
     PsychologicalSafetyState,
     RepairRequirement,
 )
-from periop_core.models import Assertion, ConceptReference, Session, SourceReference
+from periop_core.models import Assertion, AuditEvent, ConceptReference, Session, SourceReference
 from periop_core.psychological_safety import initial_state as initial_ps_state
 from periop_core.psychological_safety import update as update_ps_state
 from periop_core.reconciliation import reconcile
@@ -110,6 +110,16 @@ def create_session_endpoint(
         eligibility_result=decision.result,
     )
     db.insert_session(conn, session)
+    audit_db.append_event(
+        conn,
+        AuditEvent(
+            session_id=session.session_id,
+            event_type=AuditEventType.SESSION_CREATED,
+            entity_type="session",
+            entity_id=session.session_id,
+            payload={"subject_ref": session.subject_ref, "eligibility_result": decision.result.value},
+        ),
+    )
     return session
 
 
@@ -122,6 +132,16 @@ def acknowledge_notice_endpoint(
     session = _get_session_or_404(conn, session_id)
     session = session.model_copy(update={"notice_acknowledged_at": datetime.utcnow()})
     db.update_session(conn, session)
+    audit_db.append_event(
+        conn,
+        AuditEvent(
+            session_id=session_id,
+            event_type=AuditEventType.NOTICE_ACKNOWLEDGED,
+            entity_type="session",
+            entity_id=session_id,
+            payload={"notice_acknowledged_at": session.notice_acknowledged_at.isoformat()},
+        ),
+    )
     return session
 
 
@@ -137,6 +157,16 @@ def activate_session_endpoint(session_id: uuid.UUID, conn: psycopg.Connection = 
         raise HTTPException(status_code=409, detail=f"Cannot activate from status {session.status}")
     session = session.model_copy(update={"status": SessionStatus.ACTIVE})
     db.update_session(conn, session)
+    audit_db.append_event(
+        conn,
+        AuditEvent(
+            session_id=session_id,
+            event_type=AuditEventType.SESSION_ACTIVATED,
+            entity_type="session",
+            entity_id=session_id,
+            payload={},
+        ),
+    )
     return session
 
 
@@ -167,6 +197,21 @@ def add_assertion_endpoint(
         assertion_kwargs["assertion_time"] = body.assertion_time
     assertion = Assertion(**assertion_kwargs)
     db.insert_assertion(conn, assertion)
+    audit_db.append_event(
+        conn,
+        AuditEvent(
+            session_id=session_id,
+            event_type=AuditEventType.ASSERTION_ADDED,
+            entity_type="assertion",
+            entity_id=assertion.assertion_id,
+            payload={
+                "concept_code": body.concept_code,
+                "assertion_state": assertion.assertion_state.value,
+                "source_type": assertion.source.source_type,
+                "speaker": assertion.source.speaker.value,
+            },
+        ),
+    )
 
     return _recompute_and_summarise(conn, session_id)
 
@@ -193,8 +238,26 @@ def close_session_endpoint(session_id: uuid.UUID, conn: psycopg.Connection = Dep
 
     session = session.model_copy(update={"status": SessionStatus.COMPLETE})
     db.update_session(conn, session)
+    audit_db.append_event(
+        conn,
+        AuditEvent(
+            session_id=session_id,
+            event_type=AuditEventType.SESSION_CLOSED,
+            entity_type="session",
+            entity_id=session_id,
+            payload={"closure_outcome": summary.closure_preview.outcome.value},
+        ),
+    )
     summary.session = session
     return summary
+
+
+@app.get("/api/sessions/{session_id}/audit", response_model=list[AuditEvent])
+def get_audit_lineage_endpoint(session_id: uuid.UUID, conn: psycopg.Connection = Depends(get_conn)):
+    """SVC-014's `getLineage`. Only covers the Phase 1 core lifecycle
+    events listed in periop_core.enums.AuditEventType -- see README."""
+    _get_session_or_404(conn, session_id)
+    return audit_db.get_lineage(conn, session_id)
 
 
 @app.post("/api/sessions/{session_id}/hypotheses", response_model=ConversationalHypothesis)

@@ -5,6 +5,7 @@ underlying functions, so they catch serialisation/wiring bugs the unit
 tests wouldn't.
 """
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -154,3 +155,46 @@ def test_backdated_assertion_surfaces_as_a_stale_gap(client):
 
     fact = next(f for f in summary["working_facts"] if f["concept"]["code"] == "CUR-002")
     assert fact["verification_state"] == "STALE"
+
+
+def test_audit_lineage_reconstructs_session_lifecycle(client):
+    """SVC-014 / NFR-012 ('Audit reconstruction test passes'): the audit
+    trail should let you reconstruct exactly what happened to a session,
+    in order, without re-deriving it from the other tables."""
+    session = _create_eligible_session(client, subject_ref="pt-audit")
+    session_id = session["session_id"]
+
+    client.post(f"/api/sessions/{session_id}/notice")
+    client.post(f"/api/sessions/{session_id}/activate")
+    client.post(
+        f"/api/sessions/{session_id}/assertions",
+        json={
+            "concept_code": "CTX-003",
+            "value": "left knee replacement",
+            "assertion_state": "AFFIRMED",
+            "source_type": "PATIENT",
+            "speaker": "PATIENT",
+        },
+    )
+    client.post(f"/api/sessions/{session_id}/close")
+
+    resp = client.get(f"/api/sessions/{session_id}/audit")
+    assert resp.status_code == 200, resp.text
+    events = resp.json()
+    assert [e["event_type"] for e in events] == [
+        "SESSION_CREATED",
+        "NOTICE_ACKNOWLEDGED",
+        "SESSION_ACTIVATED",
+        "ASSERTION_ADDED",
+        "SESSION_CLOSED",
+    ]
+    # Oldest first, and the record of what was created is enough to
+    # reconstruct it without going back to the assertion table.
+    assert events[0]["payload"]["subject_ref"] == "pt-audit"
+    assert events[3]["payload"]["concept_code"] == "CTX-003"
+    assert events[3]["entity_id"] is not None  # points at the actual Assertion row
+
+
+def test_audit_lineage_404s_for_unknown_session(client):
+    resp = client.get(f"/api/sessions/{uuid.uuid4()}/audit")
+    assert resp.status_code == 404
