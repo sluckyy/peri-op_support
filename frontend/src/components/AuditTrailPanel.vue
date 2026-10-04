@@ -27,9 +27,10 @@ watch(() => props.sessionId, load)
   <section class="card">
     <h2>Audit trail (SVC-014)</h2>
     <p class="hint">
-      Immutable lineage of this session's Phase 1 core mutations --
-      <code>getLineage</code>. Not yet wired up for v1.1 Model Layer
-      mutations (hypotheses, repairs, obligations) -- see README.
+      Immutable lineage of this session's mutations -- <code>getLineage</code>.
+      Covers the Phase 1 core lifecycle and the v1.1 Model Layer (hypotheses,
+      propositions, repairs, obligations, contradictions, uncertainties,
+      psychological-safety signals) -- see README.
     </p>
     <table v-if="events.length">
       <thead>

@@ -195,6 +195,79 @@ def test_audit_lineage_reconstructs_session_lifecycle(client):
     assert events[3]["entity_id"] is not None  # points at the actual Assertion row
 
 
+def test_audit_lineage_includes_model_layer_mutations(client):
+    """The audit trail isn't just for the Phase 1 core lifecycle -- every
+    v1.1 Model Layer mutation (hypotheses, propositions, obligations,
+    contradictions, uncertainties, repairs, psychological-safety signals)
+    must append its own event too."""
+    session = _create_eligible_session(client, subject_ref="pt-audit-ml")
+    session_id = session["session_id"]
+    client.post(f"/api/sessions/{session_id}/notice")
+    client.post(f"/api/sessions/{session_id}/activate")
+
+    hyp = client.post(
+        f"/api/sessions/{session_id}/hypotheses",
+        json={"content": "possible penicillin allergy"},
+    ).json()
+    promotion = client.post(
+        f"/api/sessions/{session_id}/hypotheses/{hyp['hypothesis_id']}/promote",
+        json={
+            "target_level": "L4_PATIENT_GROUNDED",
+            "grounding_evidence": ["patient confirmed throat swelling after penicillin"],
+        },
+    ).json()
+    client.post(
+        f"/api/sessions/{session_id}/propositions/{promotion['proposition']['proposition_id']}/correct",
+        json={"content": "no penicillin allergy after all", "grounding_evidence": ["patient clarified on follow-up"]},
+    )
+    client.post(
+        f"/api/sessions/{session_id}/obligations",
+        json={"content": "confirm allergy status with pharmacy", "source": "repair"},
+    )
+    client.post(
+        f"/api/sessions/{session_id}/contradictions",
+        json={
+            "description": "patient gave two different allergy histories",
+            "involved_ids": [str(uuid.uuid4()), str(uuid.uuid4())],
+        },
+    )
+    client.post(
+        f"/api/sessions/{session_id}/uncertainties",
+        json={"description": "unclear which knee was operated on"},
+    )
+    repair = client.post(
+        f"/api/sessions/{session_id}/repairs",
+        json={
+            "repair_type": "FACTUAL_ACCURACY",
+            "description": "corrected allergy status",
+            "materiality": "HIGH",
+        },
+    ).json()
+    client.post(f"/api/sessions/{session_id}/repairs/{repair['repair_id']}/resolve")
+    client.post(
+        f"/api/sessions/{session_id}/psychological-safety/signal",
+        json={"signal_names": ["patient_asked_a_question"]},
+    )
+
+    resp = client.get(f"/api/sessions/{session_id}/audit")
+    assert resp.status_code == 200, resp.text
+    event_types = [e["event_type"] for e in resp.json()]
+    assert event_types == [
+        "SESSION_CREATED",
+        "NOTICE_ACKNOWLEDGED",
+        "SESSION_ACTIVATED",
+        "HYPOTHESIS_CREATED",
+        "HYPOTHESIS_PROMOTED",
+        "PROPOSITION_CORRECTED",
+        "OBLIGATION_CREATED",
+        "CONTRADICTION_LOGGED",
+        "UNCERTAINTY_LOGGED",
+        "REPAIR_CREATED",
+        "REPAIR_RESOLVED",
+        "PSYCHOLOGICAL_SAFETY_SIGNAL_APPLIED",
+    ]
+
+
 def test_audit_lineage_404s_for_unknown_session(client):
     resp = client.get(f"/api/sessions/{uuid.uuid4()}/audit")
     assert resp.status_code == 404

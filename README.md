@@ -114,9 +114,9 @@ gaps, reconciliation, safety gates, task ownership, audit.
 | Safety / closure gate | **Partially implemented** (`periop_core.safety`). Implements the closure-gate decision (COMPLETE / COMPLETE_WITH_OPEN_ACTIONS / BLOCKED) per INV-010/014. **Not implemented**: red-flag rule *evaluation* (the dataset's `Red_flag_rule` column is prose, not yet a structured predicate), the escalation classes (ESC-001..012), and the safety-interrupt policy hierarchy (§7.1) — these need the conversation orchestrator, which is Phase 2. |
 | Eligibility check | **Implemented** (`periop_core.eligibility`) — new in the v1.1 addendum, not in the original v1.0 spec. Age/obstetric/emergency-listing checks, hard-fails closed on unknown data. |
 | Session service | **Minimal implementation** (`periop_core.services.session_service`) — session creation gated on eligibility, activation gated on the addendum's INV-017 (AI-role notice acknowledgement). |
-| Audit/provenance trail | **Partially implemented** (`periop_core.audit_db`, `db/migrations/0003_audit_trail.sql`). SVC-014's `appendEvent`/`getLineage` for the Phase 1 core session/assertion lifecycle (session created, AI-role notice acknowledged, session activated, an assertion added, session closed) — immutability enforced at the DB layer by triggers that reject `UPDATE`/`DELETE` on `audit_event`, not just application convention. Exposed as `GET /api/sessions/{id}/audit` and shown live in the demo UI. **Not implemented**: v1.1 Model Layer mutations (hypotheses, repairs, obligations, psychological-safety signals) aren't wired into the trail yet; `provenance_json`/`Provenance` fields on individual objects (a related but distinct mechanism) predate this and are unchanged. |
+| Audit/provenance trail | **Partially implemented** (`periop_core.audit_db`, `db/migrations/0003_audit_trail.sql`). SVC-014's `appendEvent`/`getLineage` for the Phase 1 core session/assertion lifecycle (session created, AI-role notice acknowledged, session activated, an assertion added, session closed) **and** the v1.1 Model Layer mutations (hypothesis created/promoted, proposition corrected, obligation created, contradiction logged, uncertainty logged, repair created/resolved, psychological-safety signal applied) — immutability enforced at the DB layer by triggers that reject `UPDATE`/`DELETE` on `audit_event`, not just application convention. Exposed as `GET /api/sessions/{id}/audit` and shown live in the demo UI, which refreshes after every Model Layer action too. **Not implemented**: Table 17's real Turn-submission audit events (need the Phase 2 orchestrator); `provenance_json`/`Provenance` fields on individual objects (a related but distinct mechanism) predate this and are unchanged. |
 | Persistence (`periop_core.db`) | **Implemented** for everything above — Session, Assertion, WorkingFact/Conflict (recomputed each reconciliation pass, not versioned), RequirementState/InformationGap (same), Task, PatientAgendaItem. Round-trip tested against real Postgres. Concurrency control (NFR-003) is **not implemented** -- see the module docstring. |
-| Demo API (`periop_api`) | **Implemented**: create session (with eligibility gate), acknowledge AI notice, activate, add assertion (demo shortcut), get summary, attempt closure, list concepts. HTTP-level tested (FastAPI TestClient + real Postgres), not just unit tested. **Not implemented**: the real Table 17 API surface (Turn submission through the orchestrator, FHIR projection/commit endpoints), auth, and the audit/event trail. |
+| Demo API (`periop_api`) | **Implemented**: create session (with eligibility gate), acknowledge AI notice, activate, add assertion (demo shortcut), get summary, attempt closure, list concepts, the audit trail, and the full v1.1 Model Layer surface. HTTP-level tested (FastAPI TestClient + real Postgres), not just unit tested. **Not implemented**: the real Table 17 API surface (Turn submission through the orchestrator, FHIR projection/commit endpoints) and auth. |
 | Demo frontend | **Implemented**: a single Vue page exercising the full demo flow, including the eligibility-rejection path and a live safety-critical-conflict scenario. Confirmed working in an actual headless-Chromium run, not just `npm run build` succeeding. |
 | LLM extraction/language, conversation orchestrator, InterviewAction selection, validator stack, FHIR adapter, real event architecture | **Not implemented** — these are Phase 2/3 per Table 24 and were deliberately left out rather than stubbed with empty classes that would misrepresent progress. |
 
@@ -174,14 +174,15 @@ pip install -e .
 python3 -m pytest -q
 ```
 
-140 tests currently pass: the model/reconciliation/gap-engine/closure/
+141 tests currently pass: the model/reconciliation/gap-engine/closure/
 eligibility unit tests, DB round-trip tests (skipped automatically if no
 local Postgres is reachable), HTTP-level API tests for both the Phase 1
 core and the v1.1 Model Layer endpoints, the Model Layer unit tests
 (epistemic ladder, attention scoring, causal ECD/entropy, psychological
 safety, humour policy, correction propagation, contradiction/uncertainty
 logging), reconciliation's freshness-assessment tests, and the audit
-trail's lineage-reconstruction and DB-level immutability tests. Where a test pins down a
+trail's lineage-reconstruction, DB-level immutability, and Model-Layer-
+mutation-coverage tests. Where a test pins down a
 *documented current limitation* (e.g. the engine not yet resolving a
 stale-vs-current conflict via freshness, or a single-source assertion
 staying UNVERIFIED rather than auto-confirming), its docstring says so —

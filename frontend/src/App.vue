@@ -25,6 +25,7 @@ function onAssertionAdded(newSummary) {
 
 async function refreshSummary() {
   summary.value = await api.getSummary(session.value.session_id)
+  auditPanel.value?.load()
 }
 
 function onClosed(newSummary) {
