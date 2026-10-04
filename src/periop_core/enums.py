@@ -426,3 +426,15 @@ class ContradictionStatus(str, Enum):
     OPEN = "OPEN"
     RECONCILED = "RECONCILED"
     ESCALATED = "ESCALATED"
+
+
+class AuditEventType(str, Enum):
+    """AuditEvent.event_type (SVC-014). Scoped for now to the Phase 1
+    core session/assertion lifecycle -- see periop_core.audit_db and
+    README "What's implemented" for what's wired in versus not yet."""
+
+    SESSION_CREATED = "SESSION_CREATED"
+    NOTICE_ACKNOWLEDGED = "NOTICE_ACKNOWLEDGED"
+    SESSION_ACTIVATED = "SESSION_ACTIVATED"
+    ASSERTION_ADDED = "ASSERTION_ADDED"
+    SESSION_CLOSED = "SESSION_CLOSED"

@@ -26,6 +26,7 @@ from periop_core.enums import (
     AgendaPriority,
     AgendaStatus,
     AssertionState,
+    AuditEventType,
     Certainty,
     ConflictStatus,
     ConflictType,
@@ -357,3 +358,21 @@ class PatientAgendaItem(BaseModel):
     priority: AgendaPriority
     status: AgendaStatus = AgendaStatus.OPEN
     source_turn_id: uuid.UUID | None = None
+
+
+class AuditEvent(BaseModel):
+    """SVC-014 (Audit & Provenance Service): one entry in a session's
+    immutable lineage. `entity_type`/`entity_id` identify what the event
+    is about (e.g. "assertion"/an Assertion's id); `payload` carries
+    whatever's needed to reconstruct that mutation without re-deriving it
+    from other tables. See periop_core.audit_db for append/read and
+    db/migrations/0003_audit_trail.sql for how immutability is enforced.
+    """
+
+    event_id: uuid.UUID = Field(default_factory=_uuid4)
+    session_id: uuid.UUID
+    event_type: AuditEventType
+    entity_type: str
+    entity_id: uuid.UUID | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    occurred_at: datetime = Field(default_factory=datetime.utcnow)

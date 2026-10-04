@@ -97,10 +97,9 @@ az containerapp update \
 ## Running a new migration
 
 Whenever a new file lands under `db/migrations/`, rebuild and rerun the
-migrator job (it isn't kept around between uses):
-
-The Dockerfile and entrypoint script for the migrator image are checked in
-at `docs/ops/migrator/` — build it from the repo root:
+migrator job (it isn't kept around between uses). The Dockerfile and
+entrypoint script are checked in at `docs/ops/migrator/` — build from
+the repo root:
 
 ```bash
 ACR_TOKEN=$(az acr login --name periopsupportacr --expose-token --output tsv --query accessToken)
@@ -125,6 +124,23 @@ az containerapp job create \
   --secrets db-url="postgresql://periopadmin:<password>@periop-support-pg.postgres.database.azure.com:5432/periop_core?sslmode=require" \
   --env-vars PERIOP_DATABASE_URL=secretref:db-url \
   --cpu 0.5 --memory 1Gi
+```
+
+**Important:** there's no `schema_migrations` tracking table yet, so
+`run.sh` doesn't know which files were already applied. Starting the job
+with no arguments re-applies *every* file in `db/migrations/` in order —
+correct the very first time (a fresh database), but it will fail on an
+already-migrated database because `0001`/`0002` etc. try to
+`CREATE TYPE`/`CREATE TABLE` things that already exist. For every
+migration after the first, override the job's command to run only the
+*new* file(s):
+
+```bash
+az containerapp job update \
+  --resource-group periop-support-rg \
+  --name periop-migrator \
+  --command "/run.sh" \
+  --args "000X_new_migration.sql"   # just the new filename(s), space-separated
 
 az containerapp job start --resource-group periop-support-rg --name periop-migrator
 # poll: az containerapp job execution list -g periop-support-rg -n periop-migrator -o table
@@ -132,6 +148,10 @@ az containerapp job start --resource-group periop-support-rg --name periop-migra
 
 az containerapp job delete --resource-group periop-support-rg --name periop-migrator --yes
 ```
+
+(`--command ""` does *not* clear the override back to the image's own
+entrypoint the way you'd expect — it sets the command to a literal empty
+string, which just hangs. Always pass `--command "/run.sh"` explicitly.)
 
 ## Notes / things worth knowing before you rely on this
 
