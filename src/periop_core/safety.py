@@ -17,16 +17,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from periop_core.models import Conflict, OpenTask, PatientAgendaItem
+from periop_core.models import Conflict, ConflictReview, OpenTask, PatientAgendaItem
 from periop_core.model_layer import RepairRequirement
 from periop_core.enums import (
     AgendaPriority,
     AgendaStatus,
     ConflictStatus,
+    ContradictionStatus,
     Materiality,
     RepairStatus,
     TaskStatus,
 )
+from periop_core.reconciliation import CRITICAL_CONCEPT_PREFIXES
 
 
 class ClosureOutcome(str, Enum):
@@ -42,11 +44,17 @@ class ClosureResult:
     open_action_reasons: list[str] = field(default_factory=list)
 
 
+def _is_critical_concept(code: str | None, original_text: str) -> bool:
+    key = code or original_text.strip().lower()
+    return any(key.startswith(p) for p in CRITICAL_CONCEPT_PREFIXES)
+
+
 def evaluate_closure(
     open_tasks: list[OpenTask],
     agenda_items: list[PatientAgendaItem],
     conflicts: list[Conflict],
     repair_requirements: list[RepairRequirement] = (),
+    conflict_reviews: list[ConflictReview] = (),
 ) -> ClosureResult:
     """INV-010: a critical unowned task blocks completion outright.
     INV-014 (non-critical) and open conflicts/tasks otherwise downgrade a
@@ -60,6 +68,16 @@ def evaluate_closure(
     downgrade to COMPLETE_WITH_OPEN_ACTIONS, matching how conflicts are
     handled. `repair_requirements` defaults to `()` so existing callers
     that don't yet track them are unaffected.
+
+    A ConflictReview that isn't RECONCILED (still OPEN, or ESCALATED --
+    both mean nobody has actually decided which side is correct yet) on
+    one of the identity/procedure/allergy/airway/anticoagulant-adjacent
+    concepts (see `periop_core.reconciliation.CRITICAL_CONCEPT_PREFIXES`
+    and §4.3) blocks closure the same way: logging the disagreement
+    isn't enough on its own if nobody ever acts on it. Anything else
+    unresolved downgrades to COMPLETE_WITH_OPEN_ACTIONS, matching how
+    plain Conflicts are handled below. `conflict_reviews` defaults to
+    `()` so existing callers that don't yet track them are unaffected.
     """
     blocking_reasons: list[str] = []
     open_action_reasons: list[str] = []
@@ -99,6 +117,21 @@ def evaluate_closure(
         else:
             open_action_reasons.append(
                 f"Repair requirement {repair.repair_id} ({repair.materiality.value}) still OPEN"
+            )
+
+    for review in conflict_reviews:
+        if review.status == ContradictionStatus.RECONCILED:
+            continue
+        label = review.concept.code or review.concept.original_text
+        if _is_critical_concept(review.concept.code, review.concept.original_text):
+            blocking_reasons.append(
+                f"Critical conflict review {review.review_id} ({label}) still "
+                f"{review.status.value} -- a clinician must resolve this "
+                f"disagreement before closure (§4.3)"
+            )
+        else:
+            open_action_reasons.append(
+                f"Conflict review {review.review_id} ({label}) still {review.status.value}"
             )
 
     if blocking_reasons:

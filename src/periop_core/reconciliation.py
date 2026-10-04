@@ -44,8 +44,11 @@ from periop_core.source_authority import SourceAuthorityRule
 # anticoagulant-adjacent domains -- see Conflict Taxonomy CF-001..CF-009
 # and §4.3: "high/critical conflicts involving identity, procedure,
 # airway, severe allergy, anticoagulants ... cannot be silently
-# auto-resolved").
-_CRITICAL_PREFIXES = ("CTX-001", "CTX-003", "CTX-004", "CTX-005", "ALL-", "ANAES-", "MED-")
+# auto-resolved"). Public (not `_`-prefixed) because periop_core.safety
+# also needs it, to decide whether an unresolved ConflictReview on one of
+# these concepts should block closure the same way a CRITICAL Conflict's
+# materiality does.
+CRITICAL_CONCEPT_PREFIXES = ("CTX-001", "CTX-003", "CTX-004", "CTX-005", "ALL-", "ANAES-", "MED-")
 
 # Step 3 (assess freshness), scope honestly stated: the Reconciliation
 # Algorithm calls for a *datatype-specific* freshness rule (Source
@@ -74,7 +77,7 @@ def _concept_key(assertion: Assertion) -> str:
 
 
 def _classify_materiality(concept_key: str) -> Materiality:
-    if any(concept_key.startswith(p) for p in _CRITICAL_PREFIXES):
+    if any(concept_key.startswith(p) for p in CRITICAL_CONCEPT_PREFIXES):
         return Materiality.CRITICAL
     return Materiality.MODERATE
 
