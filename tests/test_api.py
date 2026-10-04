@@ -118,6 +118,130 @@ def test_full_happy_path_through_conflict_to_closure(client):
     assert resp.json()["session"]["status"] == "COMPLETE"
 
 
+def test_conflicting_assertions_log_a_durable_conflict_review(client):
+    """A ConflictReview is logged automatically the moment reconciliation
+    detects a real disagreement, carrying each side verbatim (source,
+    speaker, value, the patient's own words, and when it was said) --
+    not just the abstract Conflict row, which gets recomputed (and would
+    lose any clinician decision) on every subsequent summary fetch."""
+    session = _create_eligible_session(client, subject_ref="pt-conflict-review")
+    session_id = session["session_id"]
+    client.post(f"/api/sessions/{session_id}/notice")
+    client.post(f"/api/sessions/{session_id}/activate")
+
+    client.post(
+        f"/api/sessions/{session_id}/assertions",
+        json={
+            "concept_code": "ALL-003",
+            "value": "throat swelling after penicillin",
+            "assertion_state": "AFFIRMED",
+            "source_type": "PATIENT",
+            "speaker": "PATIENT",
+        },
+    )
+    resp = client.post(
+        f"/api/sessions/{session_id}/assertions",
+        json={
+            "concept_code": "ALL-003",
+            "value": "NKDA",
+            "assertion_state": "NEGATED",
+            "source_type": "EMR",
+            "speaker": "SYSTEM",
+        },
+    )
+    summary = resp.json()
+    assert len(summary["conflict_reviews"]) == 1
+    review = summary["conflict_reviews"][0]
+    assert review["status"] == "OPEN"
+    assert len(review["sides"]) == 2
+    source_types = {s["source_type"] for s in review["sides"]}
+    assert source_types == {"PATIENT", "EMR"}
+    values = {s["value"] for s in review["sides"]}
+    assert values == {"throat swelling after penicillin", "NKDA"}
+
+    # Fetching the summary again (no new assertion) must NOT create a
+    # second review for the same disagreement.
+    resp = client.get(f"/api/sessions/{session_id}/summary")
+    assert len(resp.json()["conflict_reviews"]) == 1
+
+
+def test_resolving_a_conflict_review_persists_across_recompute(client):
+    session = _create_eligible_session(client, subject_ref="pt-conflict-resolve")
+    session_id = session["session_id"]
+    client.post(f"/api/sessions/{session_id}/notice")
+    client.post(f"/api/sessions/{session_id}/activate")
+    client.post(
+        f"/api/sessions/{session_id}/assertions",
+        json={
+            "concept_code": "ALL-003",
+            "value": "throat swelling after penicillin",
+            "assertion_state": "AFFIRMED",
+            "source_type": "PATIENT",
+            "speaker": "PATIENT",
+        },
+    )
+    resp = client.post(
+        f"/api/sessions/{session_id}/assertions",
+        json={
+            "concept_code": "ALL-003",
+            "value": "NKDA",
+            "assertion_state": "NEGATED",
+            "source_type": "EMR",
+            "speaker": "SYSTEM",
+        },
+    )
+    review_id = resp.json()["conflict_reviews"][0]["review_id"]
+
+    # RECONCILED without resolved_value is rejected -- nothing was
+    # actually decided.
+    resp = client.post(
+        f"/api/sessions/{session_id}/conflict-reviews/{review_id}/resolve",
+        json={"status": "RECONCILED", "resolved_by": "dr-smith", "rationale": "..."},
+    )
+    assert resp.status_code == 422
+
+    resp = client.post(
+        f"/api/sessions/{session_id}/conflict-reviews/{review_id}/resolve",
+        json={
+            "status": "RECONCILED",
+            "resolved_by": "dr-smith",
+            "rationale": "EMR note is contemporaneous; patient recall is unreliable here",
+            "resolved_value": "throat swelling after penicillin",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "RECONCILED"
+    assert resp.json()["resolution"]["resolved_by"] == "dr-smith"
+
+    # Resolving an already-resolved review is rejected.
+    resp = client.post(
+        f"/api/sessions/{session_id}/conflict-reviews/{review_id}/resolve",
+        json={
+            "status": "ESCALATED",
+            "resolved_by": "dr-jones",
+            "rationale": "second opinion",
+        },
+    )
+    assert resp.status_code == 409
+
+    # Recomputing the summary (e.g. a fresh GET) must not wipe the
+    # resolution -- this is exactly the bug ConflictReview exists to avoid.
+    resp = client.get(f"/api/sessions/{session_id}/summary")
+    review = resp.json()["conflict_reviews"][0]
+    assert review["status"] == "RECONCILED"
+    assert review["resolution"]["resolved_value"] == "throat swelling after penicillin"
+
+
+def test_resolving_an_unknown_conflict_review_404s(client):
+    session = _create_eligible_session(client, subject_ref="pt-conflict-404")
+    session_id = session["session_id"]
+    resp = client.post(
+        f"/api/sessions/{session_id}/conflict-reviews/{uuid.uuid4()}/resolve",
+        json={"status": "ESCALATED", "resolved_by": "dr-smith", "rationale": "..."},
+    )
+    assert resp.status_code == 404
+
+
 def test_concepts_endpoint_returns_all_343(client):
     resp = client.get("/api/concepts")
     assert resp.status_code == 200

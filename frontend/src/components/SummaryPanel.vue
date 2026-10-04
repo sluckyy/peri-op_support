@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { api, formatApiError } from '../api.js'
 
 const props = defineProps({ summary: { type: Object, required: true } })
@@ -7,6 +7,41 @@ const emit = defineEmits(['refresh', 'closed'])
 
 const busy = ref(false)
 const error = ref(null)
+
+// ------------------------------------------------------- conflict reviews
+
+const reviewForms = reactive({}) // review_id -> { resolved_value, resolved_by, rationale }
+
+function reviewForm(reviewId) {
+  if (!reviewForms[reviewId]) {
+    reviewForms[reviewId] = { resolved_value: null, resolved_by: '', rationale: '' }
+  }
+  return reviewForms[reviewId]
+}
+
+function pickSide(reviewId, value) {
+  reviewForm(reviewId).resolved_value = value
+}
+
+async function resolveReview(reviewId, status) {
+  busy.value = true
+  error.value = null
+  try {
+    const form = reviewForm(reviewId)
+    await api.resolveConflictReview(props.summary.session.session_id, reviewId, {
+      status,
+      resolved_by: form.resolved_by,
+      rationale: form.rationale,
+      resolved_value: status === 'ESCALATED' ? null : form.resolved_value,
+    })
+    delete reviewForms[reviewId]
+    emit('refresh')
+  } catch (e) {
+    error.value = formatApiError(e)
+  } finally {
+    busy.value = false
+  }
+}
 
 const closureClass = computed(() => {
   const outcome = props.summary.closure_preview.outcome
@@ -85,6 +120,70 @@ async function attemptClose() {
       </tbody>
     </table>
     <p v-else class="hint">No conflicts.</p>
+
+    <h3>Conflict reviews ({{ summary.conflict_reviews.length }})</h3>
+    <p class="hint">
+      Every conflict above gets a durable review record here the moment
+      it's first detected &mdash; unlike the Conflict row above it (wiped
+      and rebuilt every time this summary is recomputed), a clinician's
+      decision on a review is never silently lost. Pick whichever side is
+      correct, or escalate if neither is.
+    </p>
+    <div v-if="summary.conflict_reviews.length" class="review-list">
+      <div v-for="r in summary.conflict_reviews" :key="r.review_id" class="review-card">
+        <div class="review-head">
+          <span class="pill" :class="`review-status-${r.status.toLowerCase()}`">{{ r.status }}</span>
+          <span>{{ r.concept.code }} &mdash; {{ r.concept.original_text }}</span>
+        </div>
+        <ul class="side-list">
+          <li v-for="s in r.sides" :key="s.assertion_id">
+            <button
+              v-if="r.status === 'OPEN'"
+              class="side-pick"
+              :class="{ picked: reviewForm(r.review_id).resolved_value === s.value }"
+              :disabled="busy"
+              @click="pickSide(r.review_id, s.value)"
+            >
+              <strong>{{ s.source_type }}</strong> ({{ s.speaker }}), {{ new Date(s.recorded_at).toLocaleDateString() }}:
+              <strong>{{ s.value }}</strong> &mdash; &ldquo;{{ s.original_text }}&rdquo;
+            </button>
+            <span v-else class="side-readonly">
+              <strong>{{ s.source_type }}</strong> ({{ s.speaker }}), {{ new Date(s.recorded_at).toLocaleDateString() }}:
+              <strong>{{ s.value }}</strong> &mdash; &ldquo;{{ s.original_text }}&rdquo;
+            </span>
+          </li>
+        </ul>
+        <div v-if="r.status === 'OPEN'" class="resolve-form">
+          <input v-model="reviewForm(r.review_id).resolved_by" placeholder="your name" />
+          <input v-model="reviewForm(r.review_id).rationale" placeholder="why" />
+          <button
+            :disabled="
+              busy ||
+              !reviewForm(r.review_id).resolved_by ||
+              !reviewForm(r.review_id).rationale ||
+              reviewForm(r.review_id).resolved_value === null
+            "
+            @click="resolveReview(r.review_id, 'RECONCILED')"
+          >
+            Reconcile with selected value
+          </button>
+          <button
+            :disabled="busy || !reviewForm(r.review_id).resolved_by || !reviewForm(r.review_id).rationale"
+            class="secondary"
+            @click="resolveReview(r.review_id, 'ESCALATED')"
+          >
+            Escalate instead
+          </button>
+        </div>
+        <p v-else class="hint resolution-summary">
+          Resolved by {{ r.resolution.resolved_by }}: &ldquo;{{ r.resolution.rationale }}&rdquo;
+          <span v-if="r.resolution.resolved_value !== null">
+            &mdash; chose <strong>{{ r.resolution.resolved_value }}</strong>
+          </span>
+        </p>
+      </div>
+    </div>
+    <p v-else class="hint">No conflict reviews yet.</p>
 
     <h3>Open gaps ({{ summary.gaps.filter((g) => g.gap.status === 'OPEN').length }})</h3>
     <table v-if="summary.gaps.length">
@@ -172,5 +271,84 @@ td {
 .materiality-low {
   background: #e6f0ff;
   color: #17469b;
+}
+.review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+.review-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  font-size: 0.85rem;
+}
+.review-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+  flex-wrap: wrap;
+}
+.review-status-open {
+  background: #fff3cd;
+  color: #7a5b00;
+}
+.review-status-reconciled {
+  background: #d1f7d6;
+  color: #196a2b;
+}
+.review-status-escalated {
+  background: #fde0e0;
+  color: #9a1c1c;
+}
+.side-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.side-pick {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--card-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-weight: 400;
+  font-size: 0.82rem;
+  padding: 0.4rem 0.6rem;
+}
+.side-pick.picked {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}
+.side-readonly {
+  display: block;
+  font-size: 0.82rem;
+  padding: 0.4rem 0.6rem;
+  color: var(--muted);
+}
+.resolve-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+.resolve-form input {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+button.secondary {
+  background: var(--card-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.resolution-summary {
+  margin: 0;
 }
 </style>
