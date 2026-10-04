@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from periop_core import audit_db, conflict_review_db, db, model_layer_db
+from periop_core.attention import AttentionCandidate, AttentionFactors, select_working_set
 from periop_core.causal_reasoning import entropy, expected_clinical_discrimination
 from periop_core.dataset import default_concept_labels, default_requirements
 from periop_core.eligibility import EligibilityContext, evaluate_eligibility
@@ -55,6 +56,9 @@ from periop_core.safety import evaluate_closure
 from periop_api.deps import get_conn, get_demo_manifest
 from periop_api.schemas import (
     AddAssertionRequest,
+    AttentionCandidateResult,
+    AttentionWorkingSetRequest,
+    AttentionWorkingSetResponse,
     CausalEcdRequest,
     CausalEcdResponse,
     ClosurePreview,
@@ -852,6 +856,50 @@ def causal_ecd_endpoint(body: CausalEcdRequest):
         prior_entropy=prior_entropy,
         expected_posterior_entropy=prior_entropy - ecd,
         ecd=ecd,
+    )
+
+
+@app.post("/api/tools/attention-working-set", response_model=AttentionWorkingSetResponse)
+def attention_working_set_endpoint(body: AttentionWorkingSetRequest):
+    """v1.1 §6A.5 -- a standalone calculator over the real deterministic
+    scoring in periop_core.attention, not tied to any session's stored
+    objects. Deliberately NOT derived from real hypotheses/propositions/
+    obligations: that would mean inventing a risk/clinical-value scoring
+    function the spec doesn't define for arbitrary conversational
+    objects (the same kind of judgement call reconciliation's
+    fitness-based tie-breaking was declined for -- see README).
+    Useful for exploring how the weighted-sum ranking and the
+    risk-based forced-inclusion rule (6A.5: 'high-risk unresolved
+    obligations remain persistent until resolved or handed off') behave
+    on a caller-supplied candidate set."""
+    if body.max_size < 0:
+        raise HTTPException(status_code=422, detail="max_size must be >= 0")
+    try:
+        candidates = [
+            AttentionCandidate(item=c.label, factors=AttentionFactors(**c.factors.model_dump()))
+            for c in body.candidates
+        ]
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    result = select_working_set(candidates, max_size=body.max_size)
+    ranked = sorted(
+        ((c, result.scores[id(c.item)]) for c in candidates),
+        key=lambda pair: pair[1],
+        reverse=True,
+    )
+    return AttentionWorkingSetResponse(
+        working_set=result.working_set,
+        forced_inclusions=result.forced_inclusions,
+        candidates=[
+            AttentionCandidateResult(
+                label=c.item,
+                score=score,
+                in_working_set=c.item in result.working_set,
+                forced_inclusion=c.item in result.forced_inclusions,
+            )
+            for c, score in ranked
+        ],
     )
 
 

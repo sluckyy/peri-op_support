@@ -344,6 +344,66 @@ def test_causal_ecd_invalid_prior_returns_422(client):
     assert resp.status_code == 422
 
 
+def test_attention_working_set_ranks_by_score_and_respects_max_size(client):
+    resp = client.post(
+        "/api/tools/attention-working-set",
+        json={
+            "max_size": 2,
+            "candidates": [
+                {"label": "main worry", "factors": {"clinical_value": 0.9, "recency": 0.5}},
+                {"label": "follow-up question", "factors": {"clinical_value": 0.5, "recency": 0.5}},
+                {"label": "small talk", "factors": {"clinical_value": 0.1}},
+            ],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["working_set"] == ["main worry", "follow-up question"]
+    assert body["forced_inclusions"] == []
+    assert [c["label"] for c in body["candidates"]] == ["main worry", "follow-up question", "small talk"]
+
+
+def test_attention_working_set_force_includes_high_risk_item_beyond_max_size(client):
+    # Mirrors tests/test_attention.py's own force-inclusion case: a
+    # high-risk item that would rank outside max_size on score alone
+    # must still appear in the working set (6A.5: "high-risk unresolved
+    # obligations remain persistent until resolved or handed off").
+    resp = client.post(
+        "/api/tools/attention-working-set",
+        json={
+            "max_size": 2,
+            "candidates": [
+                {"label": "main worry", "factors": {"clinical_value": 1.0, "uncertainty": 1.0, "recency": 1.0}},
+                {"label": "discharge question", "factors": {"clinical_value": 0.9, "uncertainty": 0.9, "recency": 0.9}},
+                {"label": "unconfirmed difficult airway", "factors": {"risk": 0.86}},
+            ],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert set(body["working_set"]) == {"main worry", "discharge question", "unconfirmed difficult airway"}
+    assert body["forced_inclusions"] == ["unconfirmed difficult airway"]
+    airway = next(c for c in body["candidates"] if c["label"] == "unconfirmed difficult airway")
+    assert airway["forced_inclusion"] is True
+    assert airway["in_working_set"] is True
+
+
+def test_attention_working_set_rejects_out_of_range_factor(client):
+    resp = client.post(
+        "/api/tools/attention-working-set",
+        json={"max_size": 1, "candidates": [{"label": "x", "factors": {"risk": 1.5}}]},
+    )
+    assert resp.status_code == 422
+
+
+def test_attention_working_set_rejects_negative_max_size(client):
+    resp = client.post(
+        "/api/tools/attention-working-set",
+        json={"max_size": -1, "candidates": [{"label": "x", "factors": {}}]},
+    )
+    assert resp.status_code == 422
+
+
 def test_contradiction_create_and_summary_inclusion(client):
     session_id = _active_session(client)
     resp = client.post(
