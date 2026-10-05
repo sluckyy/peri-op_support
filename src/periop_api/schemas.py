@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from periop_core.enums import (
     AssertionState,
@@ -13,6 +13,7 @@ from periop_core.enums import (
     ContradictionStatus,
     EpistemicLevel,
     Materiality,
+    Modality,
     RepairStatus,
     RepairType,
     Salience,
@@ -90,6 +91,37 @@ class AssertionRecordedResponse(BaseModel):
     session_id: uuid.UUID
     assertion_id: uuid.UUID
     recorded: bool = True
+
+
+class InterviewQuestion(BaseModel):
+    """One question for the patient. Patient-facing, so carries only what
+    is needed to ask it -- never gaps, facts or other clinical state."""
+
+    action_id: uuid.UUID
+    concept_id: str
+    question: str
+    reask: bool = False
+
+
+class InterviewNextResponse(BaseModel):
+    done: bool
+    next: InterviewQuestion | None = None
+
+
+class InterviewAnswerRequest(BaseModel):
+    action_id: uuid.UUID
+    transcript: str = Field(min_length=1, max_length=2000)
+    modality: Modality = Modality.TEXT
+    stt_confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class InterviewAnswerResponse(BaseModel):
+    """Same access rule as AssertionRecordedResponse: says whether the
+    answer was recorded, never what the clinical state now is."""
+
+    recorded: bool
+    done: bool
+    next: InterviewQuestion | None = None
 
 
 class GapWithLabel(BaseModel):

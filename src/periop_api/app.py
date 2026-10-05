@@ -16,15 +16,27 @@ from periop_core.causal_reasoning import entropy, expected_clinical_discriminati
 from periop_core.dataset import default_concept_labels, default_requirements
 from periop_core.eligibility import EligibilityContext, evaluate_eligibility
 from periop_core.enums import (
+    ActionType,
     AuditEventType,
     ContradictionStatus,
     EligibilityResult,
+    InterviewActionStatus,
+    Modality,
     RepairStatus,
     SessionStatus,
+    Speaker,
 )
 from periop_core.epistemic import PromotionNotPermitted, promote_to_grounded_proposition
 from periop_core.gap_engine import compute_gaps, evaluate_requirements
 from periop_core.humour_policy import HumourContext, is_humour_permitted
+from periop_core.interview_llm import (
+    PROMPT_VERSION,
+    InterviewerUnavailable,
+    extract_answer,
+    llm_model,
+    realise_question,
+    validate_candidate,
+)
 from periop_core.model_layer import (
     CausalHypothesis,
     Contradiction,
@@ -46,15 +58,17 @@ from periop_core.models import (
     ConceptReference,
     ConflictReview,
     ConflictReviewSide,
+    InterviewAction,
     Session,
     SourceReference,
+    Turn,
 )
 from periop_core.psychological_safety import initial_state as initial_ps_state
 from periop_core.psychological_safety import update as update_ps_state
 from periop_core.reconciliation import reconcile
 from periop_core.safety import evaluate_closure
 
-from periop_api.deps import get_conn, get_demo_manifest
+from periop_api.deps import get_conn, get_demo_manifest, get_llm_client
 from periop_api.schemas import (
     AddAssertionRequest,
     AssertionRecordedResponse,
@@ -77,6 +91,10 @@ from periop_api.schemas import (
     GapWithLabel,
     HumourCheckRequest,
     HumourCheckResponse,
+    InterviewAnswerRequest,
+    InterviewAnswerResponse,
+    InterviewNextResponse,
+    InterviewQuestion,
     LoginRequest,
     LoginResponse,
     PromoteHypothesisRequest,
@@ -311,25 +329,206 @@ def add_assertion_endpoint(
         # Demo-only backdating -- see AddAssertionRequest.assertion_time.
         assertion_kwargs["assertion_time"] = body.assertion_time
     assertion = Assertion(**assertion_kwargs)
+    _record_assertion(conn, assertion)
+    return AssertionRecordedResponse(session_id=session_id, assertion_id=assertion.assertion_id)
+
+
+def _record_assertion(conn: psycopg.Connection, assertion: Assertion) -> SessionSummary:
+    """The single write path for assertions, shared by the manual form and
+    the interviewer: insert, audit, then recompute derived state."""
     db.insert_assertion(conn, assertion)
     audit_db.append_event(
         conn,
         AuditEvent(
-            session_id=session_id,
+            session_id=assertion.session_id,
             event_type=AuditEventType.ASSERTION_ADDED,
             entity_type="assertion",
             entity_id=assertion.assertion_id,
             payload={
-                "concept_code": body.concept_code,
+                "concept_code": assertion.concept.code,
                 "assertion_state": assertion.assertion_state.value,
                 "source_type": assertion.source.source_type,
                 "speaker": assertion.source.speaker.value,
+                "entered_via": assertion.provenance.get("entered_via"),
             },
         ),
     )
+    return _recompute_and_summarise(conn, assertion.session_id)
 
-    _recompute_and_summarise(conn, session_id)
-    return AssertionRecordedResponse(session_id=session_id, assertion_id=assertion.assertion_id)
+
+# ------------------------------------------------- conversational interview
+#
+# Patient-facing and unauthenticated, like /assertions above, and bound by
+# the same rule: responses carry the next question only, never clinical
+# state. The LLM's role is bounded per spec §10.2 -- see
+# periop_core.interview_llm.
+
+_INTERVIEW_UNAVAILABLE = "AI interviewer unavailable -- please use the form instead"
+_MAX_PATIENT_ATTEMPTS_PER_QUESTION = 2
+
+
+def _require_active(session: Session) -> None:
+    if session.status is not SessionStatus.ACTIVE:
+        raise HTTPException(
+            status_code=409, detail=f"Interview requires an ACTIVE session (status {session.status})"
+        )
+
+
+def _ask(
+    conn: psycopg.Connection,
+    action: InterviewAction,
+    client,
+    modality: Modality,
+    *,
+    previous_recorded: bool | None,
+    reask: bool = False,
+) -> InterviewQuestion:
+    """Realise the action's question (LLM-003, template fallback) and record
+    the delivered agent Turn against it (INV-008)."""
+    label = default_concept_labels().get(action.targets[0], {})
+    text, _ = realise_question(
+        client,
+        patient_question=action.fallback or label.get("patient_question", ""),
+        concept_label=label.get("concept", action.targets[0]),
+        domain=label.get("domain", ""),
+        previous_recorded=previous_recorded,
+        reask=reask,
+    )
+    db.insert_turn(conn, Turn(session_id=action.session_id, action_id=action.action_id,
+                              speaker=Speaker.AGENT, modality=modality, content=text))
+    db.set_interview_action_status(conn, action.action_id, InterviewActionStatus.DELIVERED)
+    return InterviewQuestion(action_id=action.action_id, concept_id=action.targets[0],
+                             question=text, reask=reask)
+
+
+def _next_question(
+    conn: psycopg.Connection,
+    session_id: uuid.UUID,
+    gaps: list[GapWithLabel],
+    client,
+    modality: Modality,
+    *,
+    previous_recorded: bool | None,
+) -> InterviewQuestion | None:
+    """Highest-priority open gap not yet asked this session. The
+    InterviewAction is persisted before any LLM generation (INV-007)."""
+    labels = default_concept_labels()
+    asked = db.asked_targets(conn, session_id)
+    target = next(
+        (g.requirement_id for g in gaps
+         if g.requirement_id not in asked and labels.get(g.requirement_id, {}).get("patient_question")),
+        None,
+    )
+    if target is None:
+        return None
+    label = labels[target]
+    action = InterviewAction(
+        session_id=session_id,
+        action_type=ActionType.CLOSED_SCREEN if label.get("response_type") == "boolean"
+        else ActionType.FOCUSED_PROBE,
+        targets=[target],
+        purpose=f"Ask about: {label.get('concept', target)}",
+        permitted_content=[label["patient_question"]],
+        prohibited_content=["diagnosis", "medical advice", "reassurance about fitness for surgery",
+                            "facts about the patient not in the question"],
+        fallback=label["patient_question"],
+    )
+    db.insert_interview_action(conn, action)
+    return _ask(conn, action, client, modality, previous_recorded=previous_recorded)
+
+
+@app.post("/api/sessions/{session_id}/interview/next", response_model=InterviewNextResponse)
+def interview_next_endpoint(
+    session_id: uuid.UUID,
+    modality: Modality = Modality.TEXT,
+    conn: psycopg.Connection = Depends(get_conn),
+    client=Depends(get_llm_client),
+):
+    session = _get_session_or_404(conn, session_id)
+    _require_active(session)
+    if client is None:
+        raise HTTPException(status_code=503, detail=_INTERVIEW_UNAVAILABLE)
+    summary = _recompute_and_summarise(conn, session_id)
+    question = _next_question(conn, session_id, summary.gaps, client, modality, previous_recorded=None)
+    return InterviewNextResponse(done=question is None, next=question)
+
+
+@app.post("/api/sessions/{session_id}/interview/answer", response_model=InterviewAnswerResponse)
+def interview_answer_endpoint(
+    session_id: uuid.UUID,
+    body: InterviewAnswerRequest,
+    conn: psycopg.Connection = Depends(get_conn),
+    client=Depends(get_llm_client),
+):
+    session = _get_session_or_404(conn, session_id)
+    _require_active(session)
+    try:
+        action = db.get_interview_action(conn, body.action_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown interview question") from None
+    if action.session_id != session_id:
+        raise HTTPException(status_code=404, detail="Unknown interview question")
+    turns = db.list_turns(conn, session_id)
+    if not turns or turns[-1].speaker is not Speaker.AGENT or turns[-1].action_id != action.action_id:
+        raise HTTPException(status_code=409, detail="That is not the question currently being asked")
+
+    patient_turn = Turn(session_id=session_id, action_id=action.action_id, speaker=Speaker.PATIENT,
+                        modality=body.modality, content=body.transcript, confidence=body.stt_confidence)
+    db.insert_turn(conn, patient_turn)
+
+    concept_id = action.targets[0]
+    label = default_concept_labels().get(concept_id, {})
+    action_turns = [t for t in turns if t.action_id == action.action_id]
+    try:
+        candidate = extract_answer(
+            client,
+            concept_label=label.get("concept", concept_id),
+            clinical_definition=label.get("clinical_definition", ""),
+            question=action.fallback or label.get("patient_question", ""),
+            response_type=label.get("response_type", ""),
+            transcript=body.transcript,
+            recent_turns=[(t.speaker.value.lower(), t.content) for t in action_turns[:-1]],
+        )
+    except InterviewerUnavailable:
+        raise HTTPException(status_code=503, detail=_INTERVIEW_UNAVAILABLE) from None
+
+    answer = validate_candidate(candidate, concept_id)
+    if answer is not None:
+        assertion = Assertion(
+            session_id=session_id,
+            subject_ref=session.subject_ref,
+            # TERM-001: the patient's own words are the concept's original text.
+            concept=ConceptReference(original_text=body.transcript, code=concept_id),
+            value=answer.value,
+            assertion_state=answer.assertion_state,
+            source=SourceReference(source_type="PATIENT", speaker=Speaker.PATIENT,
+                                   turn_id=patient_turn.turn_id),
+            certainty=answer.certainty,
+            provenance={
+                "entered_via": "LLM-001 turn extraction",
+                "model": llm_model(),
+                "prompt_version": PROMPT_VERSION,
+                "turn_id": str(patient_turn.turn_id),
+                "action_id": str(action.action_id),
+                "modality": body.modality.value,
+            },
+        )
+        summary = _record_assertion(conn, assertion)
+        question = _next_question(conn, session_id, summary.gaps, client, body.modality,
+                                  previous_recorded=True)
+        return InterviewAnswerResponse(recorded=True, done=question is None, next=question)
+
+    patient_attempts = sum(1 for t in action_turns if t.speaker is Speaker.PATIENT) + 1
+    if patient_attempts < _MAX_PATIENT_ATTEMPTS_PER_QUESTION:
+        question = _ask(conn, action, client, body.modality, previous_recorded=False, reask=True)
+        return InterviewAnswerResponse(recorded=False, done=False, next=question)
+
+    # Still unclear after a re-ask: move on and leave the gap open --
+    # never fabricate an answer.
+    summary = _recompute_and_summarise(conn, session_id)
+    question = _next_question(conn, session_id, summary.gaps, client, body.modality,
+                              previous_recorded=False)
+    return InterviewAnswerResponse(recorded=False, done=question is None, next=question)
 
 
 @app.get("/api/sessions/{session_id}/summary", response_model=SessionSummary)

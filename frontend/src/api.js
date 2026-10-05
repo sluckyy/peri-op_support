@@ -63,6 +63,15 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  interviewNext: (sessionId, modality) =>
+    request(`/sessions/${sessionId}/interview/next?modality=${modality}`, { method: 'POST' }),
+
+  interviewAnswer: (sessionId, payload) =>
+    request(`/sessions/${sessionId}/interview/answer`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
   getSummary: (sessionId) => request(`/sessions/${sessionId}/summary`),
 
   getAuditLineage: (sessionId) => request(`/sessions/${sessionId}/audit`),
