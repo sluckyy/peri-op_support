@@ -48,7 +48,7 @@ from periop_core.source_authority import SourceAuthorityRule
 # also needs it, to decide whether an unresolved ConflictReview on one of
 # these concepts should block closure the same way a CRITICAL Conflict's
 # materiality does.
-CRITICAL_CONCEPT_PREFIXES = ("CTX-001", "CTX-003", "CTX-004", "CTX-005", "ALL-", "ANAES-", "MED-")
+CRITICAL_CONCEPT_PREFIXES = ("CTX-001", "CTX-003", "CTX-004", "CTX-005", "ALL-", "AIR-", "ANAES-", "MED-")
 
 # Step 3 (assess freshness), scope honestly stated: the Reconciliation
 # Algorithm calls for a *datatype-specific* freshness rule (Source
