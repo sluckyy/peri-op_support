@@ -136,8 +136,8 @@ class ValidatedAnswer:
     certainty: Certainty
 
 
-def _call(client: LLMClient, *, system: str, user: str, schema: dict[str, object],
-          max_tokens: int) -> dict[str, Any]:
+def structured_call(client: LLMClient, *, system: str, user: str, schema: dict[str, object],
+                    max_tokens: int, effort: str = "low") -> dict[str, Any]:
     """One structured-output call. Raises InterviewerUnavailable on API
     errors or refusal; raises ValueError on unparseable output (so the
     caller can apply its own retry/fallback policy)."""
@@ -147,7 +147,7 @@ def _call(client: LLMClient, *, system: str, user: str, schema: dict[str, object
         max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": user}],
-        output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
+        output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
     )
     if model in _FALLBACK_MODELS:
         kwargs["betas"] = [_FALLBACK_BETA]
@@ -204,7 +204,7 @@ def extract_answer(
     last_error: Exception | None = None
     for _attempt in range(2):  # spec LLM-001 fallback: schema retry, then human/modality fallback
         try:
-            raw = _call(client, system=_EXTRACTION_SYSTEM, user=user,
+            raw = structured_call(client, system=_EXTRACTION_SYSTEM, user=user,
                         schema=_EXTRACTION_SCHEMA, max_tokens=4096)
             return ExtractionCandidate.model_validate(raw)
         except (ValueError, ValidationError) as exc:
@@ -295,7 +295,7 @@ def realise_question(
         f"Question to ask: {patient_question}"
     )
     try:
-        raw = _call(client, system=_REALISATION_SYSTEM, user=user,
+        raw = structured_call(client, system=_REALISATION_SYSTEM, user=user,
                     schema=_REALISATION_SCHEMA, max_tokens=2048)
         utterance = str(raw.get("utterance", "")).strip() if isinstance(raw, dict) else ""
     except (InterviewerUnavailable, ValueError) as exc:
