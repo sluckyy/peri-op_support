@@ -79,6 +79,15 @@ export const api = {
   draftClinicalSummary: (sessionId) =>
     request(`/sessions/${sessionId}/clinical-summary/draft`, { method: 'POST' }),
 
+  acknowledgeTask: (sessionId, taskId) =>
+    request(`/sessions/${sessionId}/tasks/${taskId}/acknowledge`, { method: 'POST' }),
+
+  resolveTask: (sessionId, taskId, note) =>
+    request(`/sessions/${sessionId}/tasks/${taskId}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ note }),
+    }),
+
   getAuditLineage: (sessionId) => request(`/sessions/${sessionId}/audit`),
 
   closeSession: (sessionId) =>

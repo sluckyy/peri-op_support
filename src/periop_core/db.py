@@ -452,6 +452,43 @@ def insert_task(conn: psycopg.Connection, task: OpenTask) -> None:
     )
 
 
+def insert_task_if_absent(conn: psycopg.Connection, task: OpenTask) -> bool:
+    """True if inserted; False if a task with this id already exists (used
+    with deterministic ids so an escalation is never raised twice)."""
+    row = conn.execute(
+        """
+        INSERT INTO task (task_id, session_id, type, owner_ref, priority, status, reason_json)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (task_id) DO NOTHING
+        RETURNING task_id
+        """,
+        (task.task_id, task.session_id, task.type.value, task.owner_ref, task.priority.value,
+         task.status.value, Jsonb(task.reason)),
+    ).fetchone()
+    return row is not None
+
+
+def get_task(conn: psycopg.Connection, task_id: uuid.UUID) -> OpenTask:
+    row = conn.execute(
+        """
+        SELECT task_id, session_id, type, owner_ref, priority, status, reason_json
+        FROM task WHERE task_id = %s
+        """,
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        raise KeyError(f"Task {task_id} not found")
+    return OpenTask(task_id=row[0], session_id=row[1], type=row[2], owner_ref=row[3],
+                    priority=row[4], status=row[5], reason=row[6])
+
+
+def update_task(conn: psycopg.Connection, task: OpenTask) -> None:
+    conn.execute(
+        "UPDATE task SET owner_ref = %s, status = %s, reason_json = %s WHERE task_id = %s",
+        (task.owner_ref, task.status.value, Jsonb(task.reason), task.task_id),
+    )
+
+
 def list_tasks(conn: psycopg.Connection, session_id: uuid.UUID) -> list[OpenTask]:
     rows = conn.execute(
         """

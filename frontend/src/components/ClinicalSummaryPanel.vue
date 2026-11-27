@@ -1,8 +1,15 @@
 <script setup>
 import { ref } from 'vue'
 import { api, formatApiError } from '../api.js'
+import TaskActions from './TaskActions.vue'
 
 const props = defineProps({ sessionId: { type: String, required: true } })
+const emit = defineEmits(['changed'])
+
+function onTaskChanged() {
+  load()
+  emit('changed') // closure preview and audit trail elsewhere on the page
+}
 
 const summary = ref(null)
 const error = ref(null)
@@ -96,8 +103,20 @@ load()
               <span class="muted">· {{ sourceLine(s) }}</span>
             </li>
           </ul>
+          <TaskActions v-if="a.task_id" :session-id="sessionId" :item="a" @changed="onTaskChanged" />
         </li>
       </ul>
+
+      <template v-if="summary.review_flags.length">
+        <h3>Flagged for review ({{ summary.review_flags.length }})</h3>
+        <ul class="attention">
+          <li v-for="f in summary.review_flags" :key="f.task_id" class="moderate">
+            <strong>{{ f.title }}</strong>
+            <div class="detail">{{ f.detail }}</div>
+            <TaskActions :session-id="sessionId" :item="f" @changed="onTaskChanged" />
+          </li>
+        </ul>
+      </template>
 
       <h3>Safety-critical findings</h3>
       <p v-if="!summary.safety_findings.length" class="hint">None reported.</p>
@@ -208,6 +227,9 @@ ul {
 .attention > li.high {
   border-left-color: var(--block-fg);
   background: var(--block-bg);
+}
+.attention > li.moderate {
+  border-left-color: var(--accent);
 }
 .chip {
   font-size: 0.7rem;

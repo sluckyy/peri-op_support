@@ -64,6 +64,7 @@ _VERIFICATION_TEXT = {
     VerificationState.UNKNOWN: "unknown",
 }
 _SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MODERATE": 2, "LOW": 3}
+_TASK_SEVERITY = {"CRITICAL": "CRITICAL", "URGENT": "HIGH", "ROUTINE": "MODERATE"}
 
 
 class FindingSource(BaseModel):
@@ -96,6 +97,9 @@ class AttentionItem(BaseModel):
     concept_id: str | None = None
     concept: str | None = None
     sources: list[FindingSource] = []
+    task_id: uuid.UUID | None = None
+    owner: str | None = None
+    status: str | None = None
 
 
 class DomainSection(BaseModel):
@@ -139,6 +143,7 @@ class ClinicalSummary(BaseModel):
     review_status: str = REVIEW_STATUS
     closure_outcome: str
     attention: list[AttentionItem]
+    review_flags: list[AttentionItem] = []
     safety_findings: list[Finding]
     domains: list[DomainSection]
     unanswered_mandatory: list[UnansweredItem]
@@ -194,6 +199,9 @@ def build_clinical_summary(
     attention: list[AttentionItem] = [
         AttentionItem(kind="closure_block", severity="CRITICAL", title="Closure is blocked", detail=reason)
         for reason in blocking_reasons
+        # An unowned critical task is listed as its own item below, which
+        # says it blocks closure -- don't show it twice.
+        if not reason.startswith("Critical task ")
     ]
 
     # Conflict rows are recomputed (new ids) on every pass; a review is
@@ -230,13 +238,32 @@ def build_clinical_summary(
         if repair.status is RepairStatus.OPEN and repair.materiality in (Materiality.CRITICAL, Materiality.HIGH):
             attention.append(AttentionItem(kind="repair", severity=repair.materiality.value,
                                            title="Open conversational repair", detail=repair.description))
+    review_flags: list[AttentionItem] = []
     for task in tasks:
-        if task.status in (TaskStatus.OPEN, TaskStatus.ACKNOWLEDGED):
-            severity = "CRITICAL" if task.priority.value == "CRITICAL" else "HIGH"
-            owner = task.owner_ref or "UNOWNED"
-            attention.append(AttentionItem(kind="task", severity=severity,
-                                           title=f"Open {task.type.value.lower()} task ({owner})",
-                                           detail=str(task.reason.get("why") or task.reason)))
+        if task.status not in (TaskStatus.OPEN, TaskStatus.ACKNOWLEDGED):
+            continue
+        reason = task.reason or {}
+        concept_id = reason.get("concept_id")
+        sources = [_source(by_id[uuid.UUID(a)]) for a in reason.get("trigger_assertion_ids", [])
+                   if uuid.UUID(a) in by_id]
+        ownership = f"Owned by {task.owner_ref}." if task.owner_ref else "Unowned."
+        if task.blocks_closure():
+            ownership = "Unowned — blocks closure until someone takes ownership."
+        tier = reason.get("tier")
+        if tier:
+            label_text = {"URGENT": "URGENT", "RED": "Red flag", "AMBER": "Review"}.get(tier, tier)
+            title = f"{label_text}: {reason.get('concept', concept_id)}"
+            esc_class = f" ({reason['escalation_class']})" if reason.get("escalation_class") else ""
+            detail = f"{reason.get('why', '')}{esc_class} {ownership}".strip()
+        else:
+            title = f"Open {task.type.value.lower()} task"
+            detail = f"{reason.get('why') or reason} {ownership}"
+        item = AttentionItem(
+            kind="task", severity=_TASK_SEVERITY[task.priority.value], title=title, detail=detail,
+            concept_id=concept_id, concept=reason.get("concept"), sources=sources,
+            task_id=task.task_id, owner=task.owner_ref, status=task.status.value,
+        )
+        (review_flags if task.priority.value == "ROUTINE" else attention).append(item)
 
     domain_order = list(dict.fromkeys(meta.get("domain", "Other") for meta in labels.values()))
     sections: dict[str, DomainSection] = {}
@@ -322,6 +349,7 @@ def build_clinical_summary(
         generated_at=now or datetime.now(timezone.utc),
         closure_outcome=closure_outcome,
         attention=attention,
+        review_flags=review_flags,
         safety_findings=safety_findings,
         domains=ordered_sections,
         unanswered_mandatory=unanswered_mandatory,

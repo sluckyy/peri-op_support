@@ -117,6 +117,7 @@ async function signOut() {
           ref="clinicalPanel"
           :key="session.session_id"
           :session-id="session.session_id"
+          @changed="refreshSummary"
         />
         <details class="manual" :open="hasOpenReview">
           <summary>Engine detail (raw state, conflict review, close session, Model Layer)</summary>

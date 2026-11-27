@@ -18,12 +18,15 @@ const current = ref(null)
 const caption = ref('')
 const typed = ref('')
 const error = ref(null)
+const safetyMessage = ref(null)
+const pendingNext = ref(null)
 const log = ref(null)
 
 let recognition = null
 
 const statusText = computed(() => ({
   thinking: 'Thinking…',
+  paused: 'Paused — please read the safety message above.',
   speaking: 'Speaking…',
   listening: 'Listening… go ahead and answer',
   done: 'Interview finished.',
@@ -168,11 +171,31 @@ async function submit(text, modality, confidence = null) {
       stt_confidence: confidence,
     })
     if (resp.recorded) emit('answered')
+    if (resp.safety_message) return safetyInterrupt(resp.safety_message, resp.done ? null : resp.next)
     if (resp.done) return finish()
     await present(resp.next)
   } catch (e) {
     handleError(e)
   }
+}
+
+// ESC-001: an approved, fixed safety message (never AI-written). The
+// interview pauses until the patient chooses to continue.
+async function safetyInterrupt(message, next) {
+  current.value = null
+  pendingNext.value = next
+  safetyMessage.value = message
+  messages.value.push({ from: 'agent', text: message, safety: true })
+  await speak(message)
+  status.value = 'paused'
+}
+
+async function continueAfterSafety() {
+  const next = pendingNext.value
+  safetyMessage.value = null
+  pendingNext.value = null
+  if (next) await present(next)
+  else finish()
 }
 
 function submitTyped() {
@@ -248,8 +271,13 @@ onBeforeUnmount(() => {
     </div>
 
     <template v-else>
+      <div v-if="safetyMessage" class="safety" role="alert">
+        <strong>Important</strong>
+        <p>{{ safetyMessage }}</p>
+        <button @click="continueAfterSafety">I'm OK — continue the questions</button>
+      </div>
       <div ref="log" class="log" aria-live="polite">
-        <div v-for="(m, i) in messages" :key="i" class="bubble" :class="m.from">
+        <div v-for="(m, i) in messages" :key="i" class="bubble" :class="[m.from, { safety: m.safety }]">
           <span class="who">{{ m.from === 'agent' ? 'Assistant' : 'You' }}</span>
           {{ m.text }}
         </div>
@@ -339,6 +367,24 @@ onBeforeUnmount(() => {
   font-weight: 600;
   opacity: 0.75;
   margin-bottom: 0.15rem;
+}
+.safety {
+  border: 2px solid var(--error-fg);
+  background: var(--error-bg);
+  color: var(--error-fg);
+  border-radius: 0.6rem;
+  padding: 0.7rem 0.9rem;
+  margin: 0.4rem 0;
+}
+.safety p {
+  margin: 0.3rem 0 0.6rem;
+  color: var(--text-h);
+  font-size: 1.05rem;
+}
+.bubble.safety {
+  border: 2px solid var(--error-fg);
+  background: var(--error-bg);
+  color: var(--text-h);
 }
 .status {
   min-height: 1.2rem;

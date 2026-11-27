@@ -91,6 +91,9 @@ class AssertionRecordedResponse(BaseModel):
     session_id: uuid.UUID
     assertion_id: uuid.UUID
     recorded: bool = True
+    # Approved urgent safety text (ESC-001) if this answer newly raised an
+    # URGENT escalation -- the one piece of clinical content a patient sees.
+    safety_message: str | None = None
 
 
 class InterviewQuestion(BaseModel):
@@ -122,6 +125,11 @@ class InterviewAnswerResponse(BaseModel):
     recorded: bool
     done: bool
     next: InterviewQuestion | None = None
+    safety_message: str | None = None
+
+
+class ResolveTaskRequest(BaseModel):
+    note: str = Field(min_length=1, max_length=2000)
 
 
 class GapWithLabel(BaseModel):

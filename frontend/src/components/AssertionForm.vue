@@ -9,6 +9,7 @@ const concepts = ref([])
 const search = ref('')
 const busy = ref(false)
 const error = ref(null)
+const safetyMessage = ref(null) // approved ESC-001 text from the server, shown verbatim
 
 const form = reactive({
   concept_code: '',
@@ -45,7 +46,7 @@ async function submit() {
   busy.value = true
   error.value = null
   try {
-    const summary = await api.addAssertion(props.sessionId, {
+    const result = await api.addAssertion(props.sessionId, {
       concept_code: form.concept_code,
       value: form.value || null,
       assertion_state: form.assertion_state,
@@ -53,7 +54,8 @@ async function submit() {
       speaker: form.speaker,
       assertion_time: form.assertion_date ? new Date(form.assertion_date).toISOString() : null,
     })
-    emit('added', summary)
+    safetyMessage.value = result.safety_message || safetyMessage.value
+    emit('added', result)
     form.value = ''
   } catch (e) {
     error.value = formatApiError(e)
@@ -124,6 +126,9 @@ async function submit() {
       <button :disabled="busy || !form.concept_code" @click="submit">Add assertion</button>
     </div>
 
+    <p v-if="safetyMessage" class="alert alert-error" role="alert">
+      <strong>Important:</strong> {{ safetyMessage }}
+    </p>
     <p v-if="error" class="alert alert-error">{{ error }}</p>
   </section>
 </template>
