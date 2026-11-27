@@ -10,15 +10,25 @@ Concept_ID -> concept vocabulary this stands in for.
 
 Activation rules (`Requirement.activation_rule`, the dataset's `Trigger`
 column) are free text in the source dataset (e.g. "All patients",
-"Condition-triggered..."). This module only implements the M0 (universal
-mandatory) case as "always active" and treats every other class as
-"active" too for now (i.e. it does not yet parse conditional triggers) --
-that parser is a documented TODO, not silently assumed equivalent to M0.
+"Condition-triggered..."), so they are not parsed. Instead, conditional
+follow-ups are deactivated by the clinician-approved skip map
+(periop_core.skip_map): the caller passes `not_applicable` and those
+requirements become NOT_APPLICABLE unless they already have an answer of
+their own. Everything not covered by an approved rule stays active.
 """
 from __future__ import annotations
 
-from periop_core.enums import GapStatus, GapType, InformationState, RequirementClass
-from periop_core.models import InformationGap, Requirement, RequirementState, WorkingFact
+import uuid
+
+from periop_core.enums import (
+    AssertionState,
+    GapStatus,
+    GapType,
+    InformationState,
+    RequirementClass,
+    VerificationState,
+)
+from periop_core.models import Assertion, InformationGap, Requirement, RequirementState, WorkingFact
 
 # States that satisfy a requirement outright: no gap should be generated.
 _SATISFIED_STATES = {
@@ -53,21 +63,44 @@ _GAP_TYPE_FOR_STATE = {
 }
 
 
+def negated_concepts(facts: list[WorkingFact], assertions: list[Assertion]) -> set[str]:
+    """Concepts with a clear, current "no": a fact that is neither
+    conflicted nor stale, whose supporting assertions are all NEGATED.
+    Unsure, unknown, declined, conflicting or stale answers never count."""
+    state_by_id = {a.assertion_id: a.assertion_state for a in assertions}
+    out: set[str] = set()
+    for fact in facts:
+        if fact.verification_state not in (VerificationState.CONFIRMED, VerificationState.UNCONFIRMED):
+            continue
+        states = {state_by_id.get(a) for a in fact.supporting_assertion_ids}
+        if fact.concept.code and states == {AssertionState.NEGATED}:
+            out.add(fact.concept.code)
+    return out
+
+
 def evaluate_requirements(
     session_id,
     requirements: dict[str, Requirement],
     working_facts_by_requirement: dict[str, WorkingFact],
+    not_applicable: dict[str, list[uuid.UUID]] | None = None,
 ) -> list[RequirementState]:
     """Compute one RequirementState per active requirement.
 
     A requirement with no matching WorkingFact is NOT_ASKED (INV-005:
     this must never be silently treated as a negative/confirmed-absent
-    finding).
+    finding) -- unless it is in `not_applicable` ({requirement_id: the
+    parent assertions that made it so}), in which case it is
+    NOT_APPLICABLE with those assertions as its evidence. A requirement
+    that already has its own answer is never overridden.
     """
+    not_applicable = not_applicable or {}
     states: list[RequirementState] = []
     for requirement_id, requirement in requirements.items():
         fact = working_facts_by_requirement.get(requirement_id)
-        if fact is None:
+        if fact is None and requirement_id in not_applicable:
+            information_state = InformationState.NOT_APPLICABLE
+            evidence_refs = list(not_applicable[requirement_id])
+        elif fact is None:
             information_state = InformationState.NOT_ASKED
             evidence_refs = []
         else:
@@ -87,8 +120,6 @@ def evaluate_requirements(
 
 
 def _information_state_for_fact(fact: WorkingFact) -> InformationState:
-    from periop_core.enums import VerificationState
-
     if fact.verification_state == VerificationState.CONFLICTED:
         return InformationState.CONFLICTING
     if fact.verification_state == VerificationState.CONFIRMED:
