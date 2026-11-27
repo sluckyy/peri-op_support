@@ -53,7 +53,8 @@ def default_requirements() -> dict[str, Requirement]:
 
 
 def load_concept_labels(csv_path: pathlib.Path = DEFAULT_DATASET_CSV) -> dict[str, dict[str, str]]:
-    """Return {Concept_ID: {"domain":..., "concept":..., "patient_question":...}}.
+    """Return {Concept_ID: {"domain", "concept", "patient_question",
+    "clinical_definition", "response_type"}}.
 
     Display metadata only -- not part of the canonical Requirement object
     (periop_core.models.Requirement), which stays limited to what the gap
@@ -70,6 +71,8 @@ def load_concept_labels(csv_path: pathlib.Path = DEFAULT_DATASET_CSV) -> dict[st
                 "domain": row["Domain"].strip(),
                 "concept": row["Concept"].strip(),
                 "patient_question": row["Patient_question"].strip(),
+                "clinical_definition": row["Clinical_definition"].strip(),
+                "response_type": row["Response_type"].strip(),
             }
     return labels
 

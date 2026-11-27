@@ -175,8 +175,41 @@ string, which just hangs. Always pass `--command "/run.sh"` explicitly.)
   even for extensions in Azure's own supported list (see above).
 - This deploys the demo API + UI only. It does **not** touch the pending
   Azure Postgres data-residency/jurisdiction questions from earlier, and
-  it is still the same demo scope as the README describes — no LLM,
-  orchestrator, or FHIR layer.
+  it is still the same demo scope as the README describes — an LLM-backed
+  interviewer (see below), but no orchestrator or FHIR layer.
+
+## Enabling the voice interviewer
+
+The interviewer calls the Claude API. Without a key it fails closed: the
+"Talk to the pre-op assistant" panel says it's unavailable and the
+manual form opens instead. No database migration is needed — it uses the
+`interview_action` and `turn` tables from `0001`.
+
+1. Create a key at console.anthropic.com (Settings → API keys) and add
+   billing credit.
+2. Store it as a secret on the Container App and point an env var at it
+   (single quotes, and `set +H` first if the key contains `!`):
+
+   ```bash
+   az containerapp secret set \
+     --resource-group periop-support-rg --name periop-support-demo \
+     --secrets anthropic-api-key='<your key>'
+
+   az containerapp update \
+     --resource-group periop-support-rg --name periop-support-demo \
+     --set-env-vars ANTHROPIC_API_KEY=secretref:anthropic-api-key \
+     --revision-suffix llm$(date +%s)
+   ```
+
+   A Container App doesn't pick up a changed secret until a new revision
+   starts, which the `--revision-suffix` forces.
+3. Optional: `PERIOP_LLM_MODEL` (default `claude-opus-5-5`) switches the
+   model without a code change, e.g. `--set-env-vars
+   PERIOP_LLM_MODEL=claude-sonnet-5-5`.
+
+Voice input works in Chrome and Edge (the page is served over HTTPS, which
+browsers require for the microphone). Browser speech recognition sends
+audio to the browser vendor — demo data only.
 - The Azure-services-only firewall rule means nobody can `psql` in
   directly, including from a laptop or Azure Cloud Shell. If you need
   ad-hoc query access, either add a firewall rule scoped to your own

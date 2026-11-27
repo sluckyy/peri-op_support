@@ -32,18 +32,20 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Jsonb
 
-from periop_core.enums import FactAssertionRole
+from periop_core.enums import FactAssertionRole, InterviewActionStatus
 from periop_core.models import (
     Assertion,
     ConceptReference,
     Conflict,
     InformationGap,
+    InterviewAction,
     OpenTask,
     PatientAgendaItem,
     ReleaseManifest,
     RequirementState,
     Session,
     SourceReference,
+    Turn,
     WorkingFact,
 )
 
@@ -508,5 +510,86 @@ def list_agenda_items(conn: psycopg.Connection, session_id: uuid.UUID) -> list[P
             status=r[4],
             source_turn_id=r[5],
         )
+        for r in rows
+    ]
+
+
+# ------------------------------------------- interview actions and turns
+
+def insert_interview_action(conn: psycopg.Connection, action: InterviewAction) -> None:
+    contract = action.model_dump(
+        mode="json", exclude={"action_id", "session_id", "action_type", "status"}
+    )
+    conn.execute(
+        """
+        INSERT INTO interview_action (action_id, session_id, action_type, contract_json, status)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        (action.action_id, action.session_id, action.action_type.value, Jsonb(contract),
+         action.status.value),
+    )
+
+
+def get_interview_action(conn: psycopg.Connection, action_id: uuid.UUID) -> InterviewAction:
+    row = conn.execute(
+        """
+        SELECT action_id, session_id, action_type, contract_json, status
+        FROM interview_action WHERE action_id = %s
+        """,
+        (action_id,),
+    ).fetchone()
+    if row is None:
+        raise KeyError(f"InterviewAction {action_id} not found")
+    return InterviewAction(action_id=row[0], session_id=row[1], action_type=row[2], status=row[4], **row[3])
+
+
+def set_interview_action_status(
+    conn: psycopg.Connection, action_id: uuid.UUID, status: InterviewActionStatus
+) -> None:
+    conn.execute(
+        "UPDATE interview_action SET status = %s WHERE action_id = %s", (status.value, action_id)
+    )
+
+
+def asked_targets(conn: psycopg.Connection, session_id: uuid.UUID) -> set[str]:
+    """Every requirement_id an InterviewAction has already targeted in
+    this session -- so an answered-but-still-open gap (e.g. patient-only,
+    unverified) is never asked twice."""
+    rows = conn.execute(
+        """
+        SELECT DISTINCT jsonb_array_elements_text(contract_json -> 'targets')
+        FROM interview_action WHERE session_id = %s
+        """,
+        (session_id,),
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def insert_turn(conn: psycopg.Connection, turn: Turn) -> None:
+    conn.execute(
+        """
+        INSERT INTO turn (turn_id, session_id, action_id, speaker, modality, content, confidence, occurred_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (turn.turn_id, turn.session_id, turn.action_id, turn.speaker.value, turn.modality.value,
+         turn.content, turn.confidence, turn.occurred_at),
+    )
+
+
+def list_turns(
+    conn: psycopg.Connection, session_id: uuid.UUID, action_id: uuid.UUID | None = None
+) -> list[Turn]:
+    query = """
+        SELECT turn_id, session_id, action_id, speaker, modality, content, confidence, occurred_at
+        FROM turn WHERE session_id = %s
+    """
+    params: tuple[Any, ...] = (session_id,)
+    if action_id is not None:
+        query += " AND action_id = %s"
+        params = (session_id, action_id)
+    rows = conn.execute(query + " ORDER BY occurred_at, turn_id", params).fetchall()
+    return [
+        Turn(turn_id=r[0], session_id=r[1], action_id=r[2], speaker=r[3], modality=r[4],
+             content=r[5], confidence=float(r[6]) if r[6] is not None else None, occurred_at=r[7])
         for r in rows
     ]

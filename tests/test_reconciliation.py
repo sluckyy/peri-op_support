@@ -82,6 +82,28 @@ def test_rec_t001_style_allergy_presence_absence_conflict_is_critical_and_preser
     }
 
 
+def test_airway_prefix_conflict_is_critical():
+    """AIR- (airway/dental/anatomical history, e.g. limited mouth opening,
+    previous difficult airway) must be CRITICAL like ALL-/ANAES-/MED- --
+    the Escalation Classes table (ESC-003) and Conflict Taxonomy both
+    name airway alongside allergy and anaesthetic safety, so a presence/
+    absence disagreement here must block auto-resolution the same way."""
+    session_id = uuid.uuid4()
+    patient_report = _assertion(
+        session_id, "AIR-001", AssertionState.AFFIRMED, "limited mouth opening",
+        "PATIENT", Speaker.PATIENT,
+    )
+    emr_denial = _assertion(
+        session_id, "AIR-001", AssertionState.NEGATED, "no airway concerns", "EMR", Speaker.SYSTEM,
+    )
+
+    facts, conflicts = reconcile([patient_report, emr_denial])
+
+    assert len(conflicts) == 1
+    assert conflicts[0].materiality == Materiality.CRITICAL
+    assert conflicts[0].can_auto_resolve() is False
+
+
 def test_rec_t005_style_stale_vs_current_smoking_reports_as_conflict_not_resolved():
     """REC-T005 in the full algorithm should resolve to 'current ex-smoker
     with dated history' via the freshness step (step 3), which this

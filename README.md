@@ -120,15 +120,17 @@ hypothesis created/status changed, conflict review created/resolved) — immutab
 | Demo API (`periop_api`) | **Implemented**: create session (with eligibility gate), acknowledge AI notice, activate, add assertion (demo shortcut), get summary, attempt closure, list concepts, the audit trail, and the full v1.1 Model Layer surface. HTTP-level tested (FastAPI TestClient + real Postgres), not just unit tested. **Not implemented**: the real Table 17 API surface (Turn submission through the orchestrator, FHIR projection/commit endpoints). |
 | Staff authentication (`periop_core.auth`) | **Implemented** — real authentication, not a demo stand-in: salted `scrypt` password hashing (stdlib `hashlib.scrypt`, a memory-hard KDF, not a fast general-purpose hash) and unguessable opaque session tokens (`secrets.token_urlsafe`), persisted server-side so logout actually revokes a token rather than just expiring. Access boundary: patients submitting their own data (`POST .../sessions`, `.../notice`, `.../activate`, `.../assertions`) stay unauthenticated — there's no patient account — but every endpoint that views a session's clinical data or takes a clinical/Model-Layer action (`GET .../summary`, `GET .../audit`, `POST .../close`, every hypothesis/proposition/repair/obligation/contradiction/uncertainty/causal-hypothesis/psychological-safety/conflict-review endpoint) requires a valid `Authorization: Bearer <token>` from `POST /api/auth/login`. `POST .../assertions` itself deliberately stopped returning the full `SessionSummary` once this landed — unauthenticated, it would otherwise be a bypass of the exact wall `require_auth` exists to enforce — see `AssertionRecordedResponse`. A `ConflictReview` resolution's `resolved_by` is the authenticated caller's username, never a client-supplied string. **Documented limitation** (stated honestly, not hidden): single-factor username/password only — no email verification, password-reset flow, MFA, or login rate-limiting; a real deployment needs all of these. |
 | Demo frontend | **Implemented**: a single Vue page exercising the full demo flow, including the eligibility-rejection path and a live safety-critical-conflict scenario. Confirmed working in an actual headless-Chromium run, not just `npm run build` succeeding. |
-| LLM extraction/language, conversation orchestrator, InterviewAction selection, validator stack, FHIR adapter, real event architecture | **Not implemented** — these are Phase 2/3 per Table 24 and were deliberately left out rather than stubbed with empty classes that would misrepresent progress. |
+| Conversational interviewer (LLM-001 turn extraction, LLM-003 question realisation) | **Partially implemented** (`periop_core.interview_llm`, `POST .../interview/next` and `.../interview/answer`, `VoiceInterview.vue`). The browser speaks each question (Web Speech `speechSynthesis`) and listens for the answer (`SpeechRecognition`, Chrome/Edge; typing always works). Questions follow the gap engine's priority order, one `InterviewAction` per question, persisted before any LLM generation (INV-007), with every agent and patient utterance stored as a `Turn` against it (INV-008). Claude (`claude-opus-5-5` by default, `PERIOP_LLM_MODEL` to change) proposes a *candidate* answer for the single concept asked — it cannot choose or invent concepts — and a deterministic validator decides whether anything is recorded; uncertainty is never turned into a negative, and an unclear reply is re-asked once with a fixed apology, then left as an open gap rather than guessed. The patient's own words are the assertion's `original_text` (TERM-001), with provenance naming the model, prompt version, turn and action. LLM-003 rephrases questions naturally but falls back to the dataset wording on any validator rejection or API error. Extraction fails closed: no `ANTHROPIC_API_KEY`, an API error, a refusal, or two schema failures → 503 and the UI opens the manual form. New sessions pin a `ReleaseManifest` naming the models and prompt version (INV-012). **Not implemented**: the orchestrator around it (cue recognition, patient agenda, signposting, summarisation, safety interrupts), conditional skipping of follow-ups that don't apply (see "Gap engine"), the continuous-time turn model (it's one utterance per answer), and server-side speech recognition (browser STT sends audio to the browser vendor — demo data only). |
+| Conversation orchestrator, validator stack beyond the interviewer's, FHIR adapter, real event architecture | **Not implemented** — these are Phase 2/3 per Table 24 and were deliberately left out rather than stubbed with empty classes that would misrepresent progress. |
 
 ## v1.1 Model Layer status (against Table 13's MVP-required list)
 
 The Model Layer (§6A) sits conceptually between raw conversation and the
 Conversation Orchestrator — but the Orchestrator itself isn't built yet
 (see the Phase 1 table above), so none of this is wired into a live
-*conversation loop* (there's no LLM turning patient speech into these
-objects automatically). What's real: the underlying data model, the
+*conversation loop* (the voice interviewer turns patient speech into
+assertions, but nothing turns it into these Model Layer objects
+automatically). What's real: the underlying data model, the
 epistemic/causal/psychological-safety/humour reasoning, persistence
 (`db/migrations/0002_model_layer.sql`, `periop_core.model_layer_db`),
 and a full round-trip through the demo API and Vue UI — you can create a
@@ -176,7 +178,8 @@ pip install -e .
 python3 -m pytest -q
 ```
 
-183 tests currently pass: the model/reconciliation/gap-engine/closure/
+213 tests currently pass (the interviewer's tests use a fake Claude
+client, so no API key or network is needed): the model/reconciliation/gap-engine/closure/
 eligibility unit tests, DB round-trip tests (skipped automatically if no
 local Postgres is reachable), HTTP-level API tests for both the Phase 1
 core and the v1.1 Model Layer endpoints, the Model Layer unit tests
