@@ -178,6 +178,24 @@ string, which just hangs. Always pass `--command "/run.sh"` explicitly.)
   it is still the same demo scope as the README describes — an LLM-backed
   interviewer (see below), but no orchestrator or FHIR layer.
 
+## Applying migration 0009 (red-flag escalation audit events)
+
+The escalation feature adds three audit event types. Apply just the new
+file with the migrator job, as for every migration after the first:
+
+```bash
+az acr build --registry periopsupportacr --image periop-migrator:latest \
+  -f docs/ops/migrator/Dockerfile .
+
+az containerapp job update --resource-group periop-support-rg --name periop-migrator \
+  --command "/run.sh" --args "0009_audit_trail_escalation_events.sql"
+
+az containerapp job start --resource-group periop-support-rg --name periop-migrator
+```
+
+Deploy the app image **after** the migration succeeds: without it, the
+first red-flag answer fails to write its audit event.
+
 ## Enabling the voice interviewer
 
 The interviewer calls the Claude API. Without a key it fails closed: the

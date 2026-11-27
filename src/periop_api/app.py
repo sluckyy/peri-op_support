@@ -9,7 +9,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from periop_core import audit_db, auth_db, conflict_review_db, db, model_layer_db, skip_map
+from periop_core import audit_db, auth_db, conflict_review_db, db, escalation, model_layer_db, skip_map
 from periop_core.attention import AttentionCandidate, AttentionFactors, select_working_set
 from periop_core.auth import User, hash_password, new_session, verify_password
 from periop_core.causal_reasoning import entropy, expected_clinical_discrimination
@@ -28,6 +28,7 @@ from periop_core.enums import (
     RepairStatus,
     SessionStatus,
     Speaker,
+    TaskStatus,
 )
 from periop_core.epistemic import PromotionNotPermitted, promote_to_grounded_proposition
 from periop_core.gap_engine import compute_gaps, evaluate_requirements, negated_concepts
@@ -62,6 +63,7 @@ from periop_core.models import (
     ConflictReview,
     ConflictReviewSide,
     InterviewAction,
+    OpenTask,
     Session,
     SourceReference,
     Turn,
@@ -105,6 +107,7 @@ from periop_api.schemas import (
     PsychologicalSafetySignalRequest,
     RegisterRequest,
     ResolveConflictReviewRequest,
+    ResolveTaskRequest,
     SessionSummary,
     UpdateCausalHypothesisStatusRequest,
     UserPublic,
@@ -332,13 +335,21 @@ def add_assertion_endpoint(
         # Demo-only backdating -- see AddAssertionRequest.assertion_time.
         assertion_kwargs["assertion_time"] = body.assertion_time
     assertion = Assertion(**assertion_kwargs)
-    _record_assertion(conn, assertion)
-    return AssertionRecordedResponse(session_id=session_id, assertion_id=assertion.assertion_id)
+    _, urgent = _record_assertion(conn, assertion)
+    return AssertionRecordedResponse(
+        session_id=session_id,
+        assertion_id=assertion.assertion_id,
+        safety_message=" ".join(msg for _, msg in urgent) or None,
+    )
 
 
-def _record_assertion(conn: psycopg.Connection, assertion: Assertion) -> SessionSummary:
+def _record_assertion(
+    conn: psycopg.Connection, assertion: Assertion
+) -> tuple[SessionSummary, list[tuple[str, str]]]:
     """The single write path for assertions, shared by the manual form and
-    the interviewer: insert, audit, then recompute derived state."""
+    the interviewer: insert, audit, raise any red-flag escalations, then
+    recompute derived state. Also returns (concept_id, approved patient
+    message) for every URGENT escalation this assertion newly raised."""
     db.insert_assertion(conn, assertion)
     audit_db.append_event(
         conn,
@@ -356,7 +367,40 @@ def _record_assertion(conn: psycopg.Connection, assertion: Assertion) -> Session
             },
         ),
     )
-    return _recompute_and_summarise(conn, assertion.session_id)
+    urgent = _raise_escalations(conn, assertion.session_id)
+    return _recompute_and_summarise(conn, assertion.session_id), urgent
+
+
+def _raise_escalations(conn: psycopg.Connection, session_id: uuid.UUID) -> list[tuple[str, str]]:
+    """Raise one task per newly triggered, approved escalation rule and
+    concept (deterministic task ids make this idempotent), audited with
+    the assertions that triggered it. See periop_core.escalation."""
+    urgent: list[tuple[str, str]] = []
+    triggered = escalation.evaluate(escalation.approved_escalation_rules(), db.list_assertions(conn, session_id))
+    for esc in triggered:
+        task = escalation.task_for(session_id, esc)
+        if not db.insert_task_if_absent(conn, task):
+            continue
+        audit_db.append_event(
+            conn,
+            AuditEvent(
+                session_id=session_id,
+                event_type=AuditEventType.ESCALATION_RAISED,
+                entity_type="task",
+                entity_id=task.task_id,
+                payload={
+                    "rule_id": esc.rule.rule_id,
+                    "tier": esc.rule.tier,
+                    "escalation_class": esc.rule.escalation_class or None,
+                    "concept_id": esc.concept_id,
+                    "trigger_assertion_ids": [str(a) for a in esc.assertion_ids],
+                    "patient_message_shown": esc.rule.patient_message or None,
+                },
+            ),
+        )
+        if esc.rule.patient_message:
+            urgent.append((esc.concept_id, esc.rule.patient_message))
+    return urgent
 
 
 # ------------------------------------------------- conversational interview
@@ -375,6 +419,25 @@ def _require_active(session: Session) -> None:
         raise HTTPException(
             status_code=409, detail=f"Interview requires an ACTIVE session (status {session.status})"
         )
+
+
+def _deliver_safety_interrupts(
+    conn: psycopg.Connection, session_id: uuid.UUID, urgent: list[tuple[str, str]], modality: Modality
+) -> str | None:
+    """ESC-001: record each approved safety message as a delivered agent
+    Turn under its own INTERRUPT_FOR_SAFETY action (INV-007/INV-008),
+    before the next question is asked so that question stays the current
+    one. The text is the approved rule text, verbatim (spec §8.3)."""
+    for concept_id, message in urgent:
+        action = InterviewAction(
+            session_id=session_id, action_type=ActionType.INTERRUPT_FOR_SAFETY, targets=[concept_id],
+            purpose="Approved urgent safety message (ESC-001)", permitted_content=[message],
+            fallback=message, status=InterviewActionStatus.DELIVERED,
+        )
+        db.insert_interview_action(conn, action)
+        db.insert_turn(conn, Turn(session_id=session_id, action_id=action.action_id,
+                                  speaker=Speaker.AGENT, modality=modality, content=message))
+    return " ".join(msg for _, msg in urgent) or None
 
 
 def _ask(
@@ -518,10 +581,12 @@ def interview_answer_endpoint(
                 "modality": body.modality.value,
             },
         )
-        summary = _record_assertion(conn, assertion)
+        summary, urgent = _record_assertion(conn, assertion)
+        safety_message = _deliver_safety_interrupts(conn, session_id, urgent, body.modality)
         question = _next_question(conn, session_id, summary.gaps, client, body.modality,
                                   previous_recorded=True)
-        return InterviewAnswerResponse(recorded=True, done=question is None, next=question)
+        return InterviewAnswerResponse(recorded=True, done=question is None, next=question,
+                                       safety_message=safety_message)
 
     patient_attempts = sum(1 for t in action_turns if t.speaker is Speaker.PATIENT) + 1
     if patient_attempts < _MAX_PATIENT_ATTEMPTS_PER_QUESTION:
@@ -590,6 +655,64 @@ def draft_clinical_summary_endpoint(
     the structured summary remains the record -- see periop_core.summary_llm."""
     _get_session_or_404(conn, session_id)
     return draft_summary(client, _clinical_summary(conn, session_id))
+
+
+def _get_task_or_404(conn: psycopg.Connection, session_id: uuid.UUID, task_id: uuid.UUID) -> OpenTask:
+    try:
+        task = db.get_task(conn, task_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
+    if task.session_id != session_id:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status in (TaskStatus.RESOLVED, TaskStatus.CANCELLED):
+        raise HTTPException(status_code=409, detail=f"Task is already {task.status.value}")
+    return task
+
+
+@app.post("/api/sessions/{session_id}/tasks/{task_id}/acknowledge", response_model=OpenTask)
+def acknowledge_task_endpoint(
+    session_id: uuid.UUID,
+    task_id: uuid.UUID,
+    conn: psycopg.Connection = Depends(get_conn),
+    current_user: User = Depends(require_auth),
+):
+    """Take ownership of a task (e.g. a red-flag escalation). The owner is
+    the authenticated caller, never a client-supplied name. An owned
+    critical task no longer blocks closure (INV-010) but stays open."""
+    task = _get_task_or_404(conn, session_id, task_id)
+    task = task.model_copy(update={"owner_ref": current_user.username, "status": TaskStatus.ACKNOWLEDGED})
+    db.update_task(conn, task)
+    audit_db.append_event(conn, AuditEvent(
+        session_id=session_id, event_type=AuditEventType.TASK_ACKNOWLEDGED, entity_type="task",
+        entity_id=task_id, payload={"owner": current_user.username},
+    ))
+    return task
+
+
+@app.post("/api/sessions/{session_id}/tasks/{task_id}/resolve", response_model=OpenTask)
+def resolve_task_endpoint(
+    session_id: uuid.UUID,
+    task_id: uuid.UUID,
+    body: ResolveTaskRequest,
+    conn: psycopg.Connection = Depends(get_conn),
+    current_user: User = Depends(require_auth),
+):
+    """Resolve a task with a required note; resolver is the authenticated caller."""
+    from datetime import datetime, timezone
+
+    task = _get_task_or_404(conn, session_id, task_id)
+    reason = {**task.reason, "resolution": {
+        "by": current_user.username, "note": body.note, "at": datetime.now(timezone.utc).isoformat(),
+    }}
+    task = task.model_copy(update={
+        "owner_ref": task.owner_ref or current_user.username, "status": TaskStatus.RESOLVED, "reason": reason,
+    })
+    db.update_task(conn, task)
+    audit_db.append_event(conn, AuditEvent(
+        session_id=session_id, event_type=AuditEventType.TASK_RESOLVED, entity_type="task",
+        entity_id=task_id, payload={"by": current_user.username, "note": body.note},
+    ))
+    return task
 
 
 @app.post("/api/sessions/{session_id}/close", response_model=SessionSummary)
