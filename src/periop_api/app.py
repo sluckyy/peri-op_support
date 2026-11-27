@@ -9,7 +9,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from periop_core import audit_db, auth_db, conflict_review_db, db, model_layer_db
+from periop_core import audit_db, auth_db, conflict_review_db, db, model_layer_db, skip_map
 from periop_core.attention import AttentionCandidate, AttentionFactors, select_working_set
 from periop_core.auth import User, hash_password, new_session, verify_password
 from periop_core.causal_reasoning import entropy, expected_clinical_discrimination
@@ -20,6 +20,7 @@ from periop_core.enums import (
     AuditEventType,
     ContradictionStatus,
     EligibilityResult,
+    GapType,
     InterviewActionStatus,
     Modality,
     RepairStatus,
@@ -27,7 +28,7 @@ from periop_core.enums import (
     Speaker,
 )
 from periop_core.epistemic import PromotionNotPermitted, promote_to_grounded_proposition
-from periop_core.gap_engine import compute_gaps, evaluate_requirements
+from periop_core.gap_engine import compute_gaps, evaluate_requirements, negated_concepts
 from periop_core.humour_policy import HumourContext, is_humour_permitted
 from periop_core.interview_llm import (
     PROMPT_VERSION,
@@ -414,11 +415,13 @@ def _next_question(
     InterviewAction is persisted before any LLM generation (INV-007)."""
     labels = default_concept_labels()
     asked = db.asked_targets(conn, session_id)
-    target = next(
-        (g.requirement_id for g in gaps
-         if g.requirement_id not in asked and labels.get(g.requirement_id, {}).get("patient_question")),
-        None,
-    )
+    candidates = [
+        g.requirement_id for g in gaps
+        if g.requirement_id not in asked and labels.get(g.requirement_id, {}).get("patient_question")
+    ]
+    not_yet_answered = {g.requirement_id for g in gaps if g.gap.gap_type is GapType.MISSING} - asked
+    answered = set(default_requirements()) - not_yet_answered
+    target = skip_map.choose_next_target(candidates, answered, skip_map.approved_skip_rules())
     if target is None:
         return None
     label = labels[target]
@@ -1307,7 +1310,13 @@ def _recompute_and_summarise(conn: psycopg.Connection, session_id: uuid.UUID) ->
     working_facts_by_requirement = {
         fact.concept.code: fact for fact in facts if fact.concept.code in requirements
     }
-    states = evaluate_requirements(session_id, requirements, working_facts_by_requirement)
+    not_applicable = {
+        child: [a for p in sorted(parents) for a in working_facts_by_requirement[p].supporting_assertion_ids]
+        for child, parents in skip_map.skipped_children(
+            skip_map.approved_skip_rules(), negated_concepts(facts, assertions)
+        ).items()
+    }
+    states = evaluate_requirements(session_id, requirements, working_facts_by_requirement, not_applicable)
     gaps = compute_gaps(states, requirements)
     gaps_by_state: dict[uuid.UUID, list] = {}
     for gap in gaps:
