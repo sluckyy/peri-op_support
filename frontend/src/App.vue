@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import SessionSetup from './components/SessionSetup.vue'
 import AssertionForm from './components/AssertionForm.vue'
 import VoiceInterview from './components/VoiceInterview.vue'
@@ -9,20 +9,31 @@ import CausalEcdCalculator from './components/CausalEcdCalculator.vue'
 import AttentionWorkingSetCalculator from './components/AttentionWorkingSetCalculator.vue'
 import AuditTrailPanel from './components/AuditTrailPanel.vue'
 import StaffAuthPanel from './components/StaffAuthPanel.vue'
+import ClinicalSummaryPanel from './components/ClinicalSummaryPanel.vue'
 import { api, clearAuthToken } from './api.js'
 
 const session = ref(null)
 const summary = ref(null)
 const auditPanel = ref(null)
+const clinicalPanel = ref(null)
 const staffUsername = ref(null) // non-null once signed in -- see require_auth
 const manualOpen = ref(false)
+// Conflict-review actions live in the engine panel; never leave one hidden.
+const hasOpenReview = computed(() =>
+  (summary.value?.conflict_reviews ?? []).some((r) => r.status === 'OPEN'),
+)
+
+function reloadStaffPanels() {
+  auditPanel.value?.load()
+  clinicalPanel.value?.load()
+}
 
 async function onSessionReady(activatedSession) {
   session.value = activatedSession
   summary.value = null
   if (staffUsername.value) {
     summary.value = await api.getSummary(activatedSession.session_id)
-    auditPanel.value?.load()
+    reloadStaffPanels()
   }
 }
 
@@ -33,25 +44,25 @@ async function onAssertionAdded() {
   // staff is actually signed in to view it.
   if (staffUsername.value && session.value) {
     summary.value = await api.getSummary(session.value.session_id)
-    auditPanel.value?.load()
+    reloadStaffPanels()
   }
 }
 
 async function refreshSummary() {
   summary.value = await api.getSummary(session.value.session_id)
-  auditPanel.value?.load()
+  reloadStaffPanels()
 }
 
 function onClosed(newSummary) {
   summary.value = newSummary
-  auditPanel.value?.load()
+  reloadStaffPanels()
 }
 
 async function onAuthenticated({ username }) {
   staffUsername.value = username
   if (session.value) {
     summary.value = await api.getSummary(session.value.session_id)
-    auditPanel.value?.load()
+    reloadStaffPanels()
   }
 }
 
@@ -102,18 +113,26 @@ async function signOut() {
         <button class="inline-button" @click="signOut">sign out</button>
       </div>
       <template v-if="session">
-        <SummaryPanel
-          v-if="summary"
-          :summary="summary"
-          @refresh="refreshSummary"
-          @closed="onClosed"
-        />
-        <ModelLayerPanel
-          v-if="summary"
+        <ClinicalSummaryPanel
+          ref="clinicalPanel"
+          :key="session.session_id"
           :session-id="session.session_id"
-          :summary="summary"
-          @refresh="refreshSummary"
         />
+        <details class="manual" :open="hasOpenReview">
+          <summary>Engine detail (raw state, conflict review, close session, Model Layer)</summary>
+          <SummaryPanel
+            v-if="summary"
+            :summary="summary"
+            @refresh="refreshSummary"
+            @closed="onClosed"
+          />
+          <ModelLayerPanel
+            v-if="summary"
+            :session-id="session.session_id"
+            :summary="summary"
+            @refresh="refreshSummary"
+          />
+        </details>
         <AuditTrailPanel ref="auditPanel" :session-id="session.session_id" />
       </template>
       <p v-else class="hint">Start a patient session above to view its data here.</p>

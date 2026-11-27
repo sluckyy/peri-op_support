@@ -6,8 +6,9 @@ Scope honestly stated: this is enough persistence for the demo API
 does NOT implement:
 - an append-only audit/event log (SVC-014) -- writes here are plain
   inserts/replacements, not event-sourced history;
-- optimistic concurrency / per-session serialised mutation (NFR-003) --
-  concurrent requests against the same session can race;
+- optimistic concurrency (NFR-003) -- only the derived-state recompute
+  is serialised per session (an advisory lock in periop_api.app);
+  other concurrent writes to one session can still race;
 - reconstructing SUPPORTS/DISSENTS role distinctions on read (the role is
   written to fact_assertion_link but `list_working_facts` currently
   returns all linked assertion IDs as supporting -- a documented

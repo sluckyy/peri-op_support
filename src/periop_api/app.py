@@ -13,6 +13,8 @@ from periop_core import audit_db, auth_db, conflict_review_db, db, model_layer_d
 from periop_core.attention import AttentionCandidate, AttentionFactors, select_working_set
 from periop_core.auth import User, hash_password, new_session, verify_password
 from periop_core.causal_reasoning import entropy, expected_clinical_discrimination
+from periop_core.clinical_summary import ClinicalSummary, build_clinical_summary
+from periop_core.summary_llm import SummaryDraft, draft_summary
 from periop_core.dataset import default_concept_labels, default_requirements
 from periop_core.eligibility import EligibilityContext, evaluate_eligibility
 from periop_core.enums import (
@@ -542,6 +544,52 @@ def get_summary_endpoint(
 ):
     _get_session_or_404(conn, session_id)
     return _recompute_and_summarise(conn, session_id)
+
+
+def _clinical_summary(conn: psycopg.Connection, session_id: uuid.UUID) -> ClinicalSummary:
+    summary = _recompute_and_summarise(conn, session_id)
+    return build_clinical_summary(
+        session=summary.session,
+        facts=summary.working_facts,
+        conflicts=summary.conflicts,
+        conflict_reviews=summary.conflict_reviews,
+        requirement_states=summary.requirement_states,
+        tasks=summary.tasks,
+        repairs=summary.repairs,
+        closure_outcome=summary.closure_preview.outcome.value,
+        blocking_reasons=summary.closure_preview.blocking_reasons,
+        assertions=db.list_assertions(conn, session_id),
+        requirements=default_requirements(),
+        labels=default_concept_labels(),
+    )
+
+
+@app.get("/api/sessions/{session_id}/clinical-summary", response_model=ClinicalSummary)
+def get_clinical_summary_endpoint(
+    session_id: uuid.UUID,
+    conn: psycopg.Connection = Depends(get_conn),
+    current_user: User = Depends(require_auth),
+):
+    """Clinician-readable pre-op summary built deterministically from the
+    governed state -- see periop_core.clinical_summary. Staff-only, like
+    the raw summary it is derived from."""
+    _get_session_or_404(conn, session_id)
+    return _clinical_summary(conn, session_id)
+
+
+@app.post("/api/sessions/{session_id}/clinical-summary/draft", response_model=SummaryDraft)
+def draft_clinical_summary_endpoint(
+    session_id: uuid.UUID,
+    conn: psycopg.Connection = Depends(get_conn),
+    current_user: User = Depends(require_auth),
+    client=Depends(get_llm_client),
+):
+    """LLM-005: an AI-drafted handover narrative from the structured
+    summary only. Draft-only and not persisted; when unavailable or
+    rejected by the validator, `available` is false with the reason and
+    the structured summary remains the record -- see periop_core.summary_llm."""
+    _get_session_or_404(conn, session_id)
+    return draft_summary(client, _clinical_summary(conn, session_id))
 
 
 @app.post("/api/sessions/{session_id}/close", response_model=SessionSummary)
@@ -1298,6 +1346,10 @@ def _recompute_and_summarise(conn: psycopg.Connection, session_id: uuid.UUID) ->
     """Re-run reconciliation and gap evaluation over the session's full
     assertion history and persist the (recomputed, not accumulated --
     see periop_core.db module docstring) derived state."""
+    # The recompute deletes and re-inserts the session's derived rows, so
+    # two concurrent requests for one session would trample each other
+    # (FK violations). Serialise per session until this transaction ends.
+    conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (str(session_id),))
     session = db.get_session(conn, session_id)
     requirements = default_requirements()
     labels = default_concept_labels()
